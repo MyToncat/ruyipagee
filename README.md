@@ -12,6 +12,9 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/ruyiPage.svg)](https://pypi.org/project/ruyiPage/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/ruyiPage)](https://pypi.org/project/ruyiPage/)
+[![Last Commit](https://img.shields.io/github/last-commit/LoseNine/ruyipage)](https://github.com/LoseNine/ruyipage/commits/main)
+[![GitHub stars](https://img.shields.io/github/stars/LoseNine/ruyipage?style=social)](https://github.com/LoseNine/ruyipage/stargazers)
+[![Downloads](https://static.pepy.tech/badge/ruyipage)](https://pepy.tech/project/ruyipage)
 
 📘 项目文档：<https://0xshoulderlab.site/automation>
 
@@ -203,33 +206,10 @@ pip install ruyiPage --upgrade
 pip install -r requirements.txt
 ```
 
-当前运行时依赖至少包括：
-
-```bash
-pip install websocket-client
-```
-
 安装后建议先确认：
 
 ```bash
 python -c "import ruyipage; print(ruyipage.__version__)"
-```
-
-### 常见依赖问题
-
-`ruyiPage` 依赖的是 `websocket-client`，不是 `websocket`。
-
-如果你装错了包，常见报错会是：
-
-```bash
-AttributeError: module 'websocket' has no attribute 'create_connection'
-```
-
-可直接执行：
-
-```bash
-pip uninstall -y websocket websocket-client
-pip install websocket-client
 ```
 
 ---

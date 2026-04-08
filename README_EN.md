@@ -12,6 +12,9 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/ruyiPage.svg)](https://pypi.org/project/ruyiPage/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/ruyiPage)](https://pypi.org/project/ruyiPage/)
+[![Last Commit](https://img.shields.io/github/last-commit/LoseNine/ruyipage)](https://github.com/LoseNine/ruyipage/commits/main)
+[![GitHub stars](https://img.shields.io/github/stars/LoseNine/ruyipage?style=social)](https://github.com/LoseNine/ruyipage/stargazers)
+[![Downloads](https://static.pepy.tech/badge/ruyipage)](https://pepy.tech/project/ruyipage)
 
 Docs: <https://0xshoulderlab.site/automation>
 
@@ -203,33 +206,10 @@ If you run the project from source, or distribute the source tree to students, i
 pip install -r requirements.txt
 ```
 
-At minimum, the runtime dependencies include:
-
-```bash
-pip install websocket-client
-```
-
 Verify the installed version after installation:
 
 ```bash
 python -c "import ruyipage; print(ruyipage.__version__)"
-```
-
-### Common dependency issue
-
-`ruyiPage` depends on `websocket-client`, not `websocket`.
-
-If the wrong package is installed, you will commonly see:
-
-```bash
-AttributeError: module 'websocket' has no attribute 'create_connection'
-```
-
-Fix it with:
-
-```bash
-pip uninstall -y websocket websocket-client
-pip install websocket-client
 ```
 
 ---
