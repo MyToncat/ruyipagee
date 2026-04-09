@@ -20,6 +20,129 @@ Docs: <https://0xshoulderlab.site/automation>
 
 ---
 
+## Real-World Showcase
+
+The images below show real scenarios. To keep the GitHub homepage more compact, they are arranged in a two-column table.
+
+<table>
+  <tr>
+    <td align="center"><b>Passes Cloudflare 5s challenge</b><br><img src="images/cloudfare.jpg" width="320" alt="Cloudflare 5s challenge" /></td>
+    <td align="center"><b>Passes hCaptcha</b><br><img src="images/hcapture.jpg" width="320" alt="hCaptcha" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Passes DataDome</b><br><img src="images/datadome.jpg" width="320" alt="DataDome" /></td>
+    <td align="center"><b>Directly enters Outlook Mail</b><br><img src="images/outlook.jpg" width="320" alt="Outlook Mail" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Directly enters Google Mail</b><br><img src="images/google.jpg" width="320" alt="Google Mail" /></td>
+    <td align="center"><b>bet365 real-world demo</b><br><img src="images/bet365.png" width="320" alt="bet365 Demo" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Fingerprint browser scan page</b><br><img src="images/fingerprint.png" width="320" alt="Fingerprint Browser Demo" /></td>
+    <td align="center"><b>Firefox-route real-world capability</b><br>Better suited for high-risk pages, login flows, challenges, and realistic interaction scenarios</td>
+  </tr>
+</table>
+
+> These images demonstrate real-world capability along the Firefox route.
+> If the target site is more heavily protected, it is still recommended to pair it with the Firefox kernel solution recommended by this project or any suitable Firefox fingerprint browser.
+
+---
+
+## Installation and Usage
+
+### Installation
+
+```bash
+pip install ruyiPage --upgrade
+```
+
+If this is your first installation, the command above also works as the default way to install the latest version.
+
+If you run the project from source, or distribute the source tree to students, install the project dependencies as well:
+
+```bash
+pip install -r requirements.txt
+```
+
+Verify the installed version after installation:
+
+```bash
+python -c "import ruyipage; print(ruyipage.__version__)"
+```
+
+### Simplest launch
+
+```python
+from ruyipage import FirefoxPage
+
+page = FirefoxPage()
+page.get("https://www.example.com")
+print(page.title)
+page.quit()
+```
+
+### Specify Firefox path and userdir
+
+```python
+from ruyipage import FirefoxOptions, FirefoxPage
+
+opts = FirefoxOptions()
+opts.set_browser_path(r"D:\Firefox\firefox.exe")
+opts.set_user_dir(r"D:\ruyipage_userdir")
+
+page = FirefoxPage(opts)
+page.get("https://www.example.com")
+print(page.title)
+page.quit()
+```
+
+### Beginner-friendly `launch`
+
+```python
+from ruyipage import launch
+
+page = launch(
+    browser_path=r"D:\Firefox\firefox.exe",
+    user_dir=r"D:\ruyipage_userdir",
+    headless=False,
+    port=9222,
+)
+
+page.get("https://www.example.com")
+print(page.title)
+page.quit()
+```
+
+### What `browser_path` and `user_dir` Mean
+
+#### `browser_path`
+
+The path to the Firefox executable.
+
+Use it when:
+
+- Firefox is not installed in the default location
+- you have multiple Firefox versions
+- you are using a portable Firefox build
+
+#### `user_dir`
+
+This is the Firefox profile / user directory.
+
+Use it when:
+
+- you want to reuse login state
+- you want to keep cookies / local storage
+- you want to reuse extensions, certificates, or preferences
+
+If you do not set it:
+
+- `ruyiPage` will create a temporary profile automatically
+- this is suitable for one-off testing
+- it is usually cleaned up after closing
+
+---
+
 ## Buy Me a Coffee
 
 If this project helps you, you are welcome to buy me a coffee and support continued work on `ruyiPage`.
@@ -184,127 +307,6 @@ The table below is not about declaring one framework absolutely better than anot
 - If you need **unified multi-browser automation**: prefer Playwright / Selenium
 - If you mainly work with **Chromium/CDP**: prefer Puppeteer / Playwright
 - If you want **Firefox + no CDP dependency + high-level BiDi APIs**: `ruyiPage` is the more relevant option
-
----
-
-## Real-World Showcase
-
-The images below show real scenarios. To keep the GitHub homepage more compact, they are arranged in a two-column table.
-
-<table>
-  <tr>
-    <td align="center"><b>Passes Cloudflare 5s challenge</b><br><img src="images/cloudfare.jpg" width="320" alt="Cloudflare 5s challenge" /></td>
-    <td align="center"><b>Passes hCaptcha</b><br><img src="images/hcapture.jpg" width="320" alt="hCaptcha" /></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Passes DataDome</b><br><img src="images/datadome.jpg" width="320" alt="DataDome" /></td>
-    <td align="center"><b>Directly enters Outlook Mail</b><br><img src="images/outlook.jpg" width="320" alt="Outlook Mail" /></td>
-  </tr>
-  <tr>
-    <td align="center"><b>Directly enters Google Mail</b><br><img src="images/google.jpg" width="320" alt="Google Mail" /></td>
-    <td align="center"><b>Fingerprint browser scan page</b><br><img src="images/fingerprint.png" width="320" alt="Fingerprint Browser Demo" /></td>
-  </tr>
-</table>
-
-> These images demonstrate real-world capability along the Firefox route.
-> If the target site is more heavily protected, it is still recommended to pair it with the Firefox kernel solution recommended by this project or any suitable Firefox fingerprint browser.
-
----
-
-## Installation
-
-```bash
-pip install ruyiPage --upgrade
-```
-
-If this is your first installation, the command above also works as the default way to install the latest version.
-
-If you run the project from source, or distribute the source tree to students, install the project dependencies as well:
-
-```bash
-pip install -r requirements.txt
-```
-
-Verify the installed version after installation:
-
-```bash
-python -c "import ruyipage; print(ruyipage.__version__)"
-```
-
----
-
-## Basic Configuration
-
-### 1. Simplest launch
-
-```python
-from ruyipage import FirefoxPage
-
-page = FirefoxPage()
-page.get("https://www.example.com")
-print(page.title)
-page.quit()
-```
-
-### 2. Specify Firefox path and userdir
-
-```python
-from ruyipage import FirefoxOptions, FirefoxPage
-
-opts = FirefoxOptions()
-opts.set_browser_path(r"D:\Firefox\firefox.exe")
-opts.set_user_dir(r"D:\ruyipage_userdir")
-
-page = FirefoxPage(opts)
-page.get("https://www.example.com")
-print(page.title)
-page.quit()
-```
-
-### 3. Beginner-friendly `launch`
-
-```python
-from ruyipage import launch
-
-page = launch(
-    browser_path=r"D:\Firefox\firefox.exe",
-    user_dir=r"D:\ruyipage_userdir",
-    headless=False,
-    port=9222,
-)
-
-page.get("https://www.example.com")
-print(page.title)
-page.quit()
-```
-
-### What `browser_path` and `user_dir` Mean
-
-#### `browser_path`
-
-The path to the Firefox executable.
-
-Use it when:
-
-- Firefox is not installed in the default location
-- you have multiple Firefox versions
-- you are using a portable Firefox build
-
-#### `user_dir`
-
-This is the Firefox profile / user directory.
-
-Use it when:
-
-- you want to reuse login state
-- you want to keep cookies / local storage
-- you want to reuse extensions, certificates, or preferences
-
-If you do not set it:
-
-- `ruyiPage` will create a temporary profile automatically
-- this is suitable for one-off testing
-- it is usually cleaned up after closing
 
 ---
 
