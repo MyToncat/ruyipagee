@@ -10,6 +10,9 @@
 > **No CDP dependency, no CDP exposure surface, and less targeted detection.**  
 > **Native actions can preserve a large amount of `isTrusted` behavior, with built-in human-like interaction support for high-risk pages.**
 
+> It can now attach to already-open **Firefox fingerprint browsers**, including ADS / FlowerBrowser setups that rewrite the debugging port to a random value.
+> You can auto-detect the live port and connect directly to the running browser instance.
+
 [![PyPI version](https://img.shields.io/pypi/v/ruyiPage.svg)](https://pypi.org/project/ruyiPage/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/ruyiPage)](https://pypi.org/project/ruyiPage/)
 [![Last Commit](https://img.shields.io/github/last-commit/LoseNine/ruyipage)](https://github.com/LoseNine/ruyipage/commits/main)
@@ -112,6 +115,40 @@ page.get("https://www.example.com")
 print(page.title)
 page.quit()
 ```
+
+### Attach to an Already-Open Browser
+
+If Firefox is already open manually, or a fingerprint browser is started first, `ruyiPage` can attach to the existing instance directly.
+
+This flow works for any **Firefox-kernel fingerprint browser**, including products such as ADS / FlowerBrowser.
+If the browser lets you set a fixed startup argument, it is recommended to add:
+
+```text
+--remote-debugging-port=9222
+```
+
+If the browser backend rewrites it to a random port, you can still use automatic port discovery.
+
+```python
+from ruyipage import auto_attach_exist_browser
+
+page = auto_attach_exist_browser(
+    start_port=6000,
+    end_port=20000,
+    latest_tab=True,
+)
+
+print(page.browser.address)
+print(page.title)
+print(page.url)
+```
+
+Useful when:
+
+- you want to open Firefox manually first and let `ruyiPage` take over afterward
+- you want to launch a fingerprint browser first and connect from your business script later
+- you are using ADS / FlowerBrowser and the real debugging port changes every run
+- you have multiple Firefox instances and want to discover which ports are attachable
 
 ### What `browser_path` and `user_dir` Mean
 
@@ -398,7 +435,40 @@ Suitable for:
 - passing fingerprint files, locale, headers, and screen parameters together
 - directly validating fingerprint output on sites such as `browserscan`
 
-### 4. HTTP Proxy Auth Example
+### 4. Attach to an Already-Open Firefox Fingerprint Browser
+
+File: `examples/39_attach_exist_browser.py`
+
+It will:
+
+- remind you to start Firefox or a Firefox fingerprint browser manually first
+- scan fixed ports first for an attachable instance
+- automatically brute-scan random ports if no fixed-port instance is found
+- attach to the live browser instance and operate it directly
+
+Core pattern:
+
+```python
+from ruyipage import auto_attach_exist_browser
+
+page = auto_attach_exist_browser(
+    start_port=6000,
+    end_port=20000,
+    latest_tab=True,
+)
+
+print(page.browser.address)
+print(page.title)
+print(page.url)
+```
+
+Suitable for:
+
+- an already-open ADS / FlowerBrowser style Firefox fingerprint browser
+- browser backends that rewrite `--remote-debugging-port=9222` to a random port
+- automatically discovering the real port and attaching to the running instance
+
+### 5. HTTP Proxy Auth Example
 
 If you are using this project's own Firefox kernel, the kernel already supports reading HTTP proxy credentials from `fpfile` automatically.
 
@@ -1142,6 +1212,7 @@ Suggested order:
 - `34_remaining_commands.py`
 - `35_native_bidi_drag.py`
 - `36_native_bidi_select.py`
+- `39_attach_exist_browser.py` auto-detect an attachable instance, then take over the already-open Firefox / fingerprint browser
 
 ---
 
