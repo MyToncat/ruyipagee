@@ -149,6 +149,52 @@ page.quit()
 - 如果你只是想要一次性会话，不复用历史数据，不传 `user_dir` 也可以
 - 完整示例可参考根目录：`quickstart_private_mode.py`
 
+### 启用 XPath Picker
+
+<p align="center">
+  <img src="images/xpath.png" width="900" alt="XPath Picker with ruyiPage code generation" />
+</p>
+
+```python
+from ruyipage import FirefoxOptions, FirefoxPage, launch
+
+# 方式一：在 FirefoxOptions 上开启
+opts = FirefoxOptions()
+opts.enable_xpath_picker(True)
+
+page = FirefoxPage(opts)
+page.get("https://www.example.com")
+
+# 方式二：直接用 launch()
+page = launch(xpath_picker=True)
+page.get("https://www.example.com")
+```
+
+启用后，页面右下角会出现一个半透明磨砂玻璃浮窗：
+
+- 点击页面元素时，会锁定当前结果
+- 浮窗会显示元素名字、文本、XPath 绝对路径、XPath 相对路径、元素中心 `(x, y)`
+- 内置 `ruyiPage代码生成` 选项卡，会自动生成对应元素获取代码
+- iframe、嵌套 iframe、open shadow root 场景会自动拼好访问链
+- `XPath (absolute)`、`XPath (relative)`、`ruyiPage代码生成` 都支持一键复制
+- 锁定后不会继续切换到其他元素
+- 点击浮窗里的 `继续选择` 后，才会重新允许选择其他元素
+- 点击浮窗里的 `暂停选择` 可暂时停止拦截页面点击
+- 点击浮窗里的 `收起` 可折叠为右下角小胶囊，再点击即可展开
+
+推荐直接运行用户示例：
+
+```bash
+python examples/42_xpath_picker_complex_showcase.py
+```
+
+这个示例会打开一套专门的复杂测试页面，覆盖：
+
+- 普通页面元素
+- 同源 iframe / 嵌套 iframe
+- open shadow root
+- 复杂文本节点与 SVG 节点
+
 ### 接管已打开的浏览器
 
 如果 Firefox 已经是你手动打开的，或者是指纹浏览器先打开的，也可以直接接管现有实例。
@@ -1274,6 +1320,7 @@ page.extensions.uninstall(ext_id)
 - `35_native_bidi_drag.py`
 - `36_native_bidi_select.py`
 - `39_attach_exist_browser.py` 自动探测可接管实例，再接管已打开的 Firefox/指纹浏览器
+- `42_xpath_picker_complex_showcase.py` 启动 XPath picker，并打开包含复杂节点、shadow root、嵌套 iframe 的综合展示页
 
 ---
 

@@ -65,6 +65,7 @@ class FirefoxBase(BasePage):
         self._ready_state = None
         self._load_mode = "normal"
         self._ua_preload_script_id = None  # 用于 UA override 的 preload script ID
+        self._xpath_picker_preload_script_id = None
 
         # 惰性加载的 units
         self._scroll = None
@@ -107,6 +108,1203 @@ class FirefoxBase(BasePage):
         self._context_id = context_id
         self._driver = ContextDriver(browser.driver, context_id)
         self._load_mode = browser.options.load_mode
+        self._maybe_enable_xpath_picker()
+
+    def _maybe_enable_xpath_picker(self):
+        """按启动配置自动启用 XPath picker。"""
+        options = getattr(self._browser, "options", None)
+        if not options or not getattr(options, "xpath_picker_enabled", False):
+            return
+
+        try:
+            if not self._xpath_picker_preload_script_id:
+                preload = self.add_preload_script(self._get_xpath_picker_script())
+                self._xpath_picker_preload_script_id = preload.id
+            self.run_js(self._get_xpath_picker_script(), as_expr=True)
+        except Exception as e:
+            logger.debug("XPath picker 注入失败: %s", e)
+
+    def _reinject_xpath_picker_if_needed(self):
+        """在导航完成后的当前页面重新显式注入 picker。"""
+        options = getattr(self._browser, "options", None)
+        if not options or not getattr(options, "xpath_picker_enabled", False):
+            return
+
+        try:
+            script_source = self._get_xpath_picker_script()
+            self.run_js(script_source, as_expr=True)
+            self.run_js(
+                self._get_xpath_picker_frame_bridge_script(),
+                script_source,
+                as_expr=False,
+            )
+        except Exception as e:
+            logger.debug("XPath picker 重新注入失败: %s", e)
+
+    @staticmethod
+    def _get_xpath_picker_frame_bridge_script():
+        return r"""
+(source) => {
+    if (typeof window === 'undefined' || window.top !== window) {
+        return false;
+    }
+
+    const injectWindow = (targetWindow) => {
+        try {
+            if (!targetWindow || !targetWindow.eval) {
+                return;
+            }
+            targetWindow.eval(source);
+        } catch (e) {
+        }
+    };
+
+    const bindFrame = (frame) => {
+        if (!frame || frame.__ruyiXPathPickerBound) {
+            return;
+        }
+        frame.__ruyiXPathPickerBound = true;
+
+        const inject = () => {
+            try {
+                const childWindow = frame.contentWindow;
+                if (!childWindow || childWindow === window) {
+                    return;
+                }
+                injectWindow(childWindow);
+                scanWindow(childWindow);
+            } catch (e) {
+            }
+        };
+
+        const tryInjectReady = () => {
+            let attempts = 0;
+            const timer = window.setInterval(() => {
+                attempts += 1;
+                try {
+                    const childWindow = frame.contentWindow;
+                    const childDocument = childWindow && childWindow.document;
+                    if (childWindow && childDocument && childDocument.readyState !== 'loading') {
+                        inject();
+                        window.clearInterval(timer);
+                        return;
+                    }
+                } catch (e) {
+                    window.clearInterval(timer);
+                    return;
+                }
+                if (attempts >= 20) {
+                    window.clearInterval(timer);
+                }
+            }, 150);
+        };
+
+        frame.addEventListener('load', inject);
+        inject();
+        tryInjectReady();
+    };
+
+    const observeWindow = (targetWindow) => {
+        try {
+            const targetDocument = targetWindow.document;
+            if (!targetDocument || targetDocument.__ruyiXPathPickerObserverBound) {
+                return;
+            }
+            let pending = false;
+            const observer = new MutationObserver(() => {
+                if (pending) {
+                    return;
+                }
+                pending = true;
+                targetWindow.setTimeout(() => {
+                    pending = false;
+                    scanWindow(targetWindow);
+                }, 50);
+            });
+            observer.observe(targetDocument.documentElement || targetDocument, {
+                childList: true,
+                subtree: true,
+            });
+            targetDocument.__ruyiXPathPickerObserverBound = true;
+        } catch (e) {
+        }
+    };
+
+    const scanWindow = (targetWindow) => {
+        try {
+            const frames = Array.from(targetWindow.document.querySelectorAll('iframe'));
+            frames.forEach(bindFrame);
+            observeWindow(targetWindow);
+        } catch (e) {
+        }
+    };
+
+    window.__ruyiXPathPickerInjectIntoFrames = () => scanWindow(window);
+    scanWindow(window);
+    return true;
+}
+"""
+
+    @staticmethod
+    def _get_xpath_picker_script():
+        return r"""
+(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+        return;
+    }
+
+    const PANEL_ID = '__ruyi_xpath_picker_panel__';
+    const HIGHLIGHT_ID = '__ruyi_xpath_picker_highlight__';
+
+    let isTopWindow = false;
+    let topWindowRef = window;
+    try {
+        isTopWindow = window.top === window;
+        topWindowRef = isTopWindow ? window : window.top;
+    } catch (e) {
+        isTopWindow = true;
+        topWindowRef = window;
+    }
+
+    const state = topWindowRef.__ruyiXPathPicker__ || {
+        mode: 'idle',
+        collapsed: false,
+        activeTab: 'info',
+        hoverData: null,
+        selectedData: null,
+        panel: null,
+    };
+    topWindowRef.__ruyiXPathPicker__ = state;
+
+    const localState = window.__ruyiXPathPickerLocal__ || {
+        hoverElement: null,
+        selectedElement: null,
+        highlight: null,
+        handlersBound: false,
+        moveHandler: null,
+        clickHandler: null,
+        scrollHandler: null,
+        resizeHandler: null,
+    };
+    window.__ruyiXPathPickerLocal__ = localState;
+
+    function ensureStyles() {
+        if (document.getElementById('__ruyi_xpath_picker_style__')) {
+            return;
+        }
+        const style = document.createElement('style');
+        style.id = '__ruyi_xpath_picker_style__';
+        style.textContent = `
+            #${PANEL_ID} {
+                position: fixed;
+                right: 16px;
+                bottom: 16px;
+                width: min(320px, calc(100vw - 24px));
+                max-height: min(70vh, 560px);
+                overflow: auto;
+                padding: 14px;
+                border-radius: 16px;
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                background: rgba(15, 23, 42, 0.62);
+                color: #e5eefb;
+                box-shadow: 0 18px 42px rgba(2, 6, 23, 0.34);
+                backdrop-filter: blur(16px) saturate(140%);
+                -webkit-backdrop-filter: blur(16px) saturate(140%);
+                font-family: Inter, "Segoe UI", Arial, sans-serif;
+                font-size: 12px;
+                line-height: 1.5;
+                z-index: 2147483647;
+                transition: width 0.18s ease, padding 0.18s ease, transform 0.18s ease;
+            }
+            #${PANEL_ID}[data-collapsed="true"] {
+                width: auto;
+                max-height: none;
+                overflow: visible;
+                padding: 10px 12px;
+                border-radius: 999px;
+            }
+            #${PANEL_ID} * {
+                box-sizing: border-box;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 12px;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__title {
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: 0.02em;
+                color: #f8fafc;
+            }
+            #${PANEL_ID}[data-collapsed="true"] .ruyi-xpath-picker__title {
+                font-size: 12px;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__badge {
+                display: inline-flex;
+                align-items: center;
+                padding: 3px 8px;
+                border-radius: 999px;
+                background: rgba(96, 165, 250, 0.18);
+                color: #bfdbfe;
+                font-size: 11px;
+                font-weight: 600;
+                white-space: nowrap;
+            }
+            #${PANEL_ID}[data-collapsed="true"] .ruyi-xpath-picker__badge {
+                display: inline-flex;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__intro {
+                margin: 0 0 12px;
+                color: rgba(226, 232, 240, 0.82);
+            }
+            #${PANEL_ID}[data-collapsed="true"] .ruyi-xpath-picker__intro,
+            #${PANEL_ID}[data-collapsed="true"] .ruyi-xpath-picker__meta,
+            #${PANEL_ID}[data-collapsed="true"] .ruyi-xpath-picker__actions {
+                display: none;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__meta {
+                display: grid;
+                gap: 10px;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__tabs {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 12px;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__tab {
+                appearance: none;
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                border-radius: 999px;
+                padding: 6px 10px;
+                background: rgba(15, 23, 42, 0.24);
+                color: #cbd5e1;
+                cursor: pointer;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__tab[data-active="true"] {
+                background: rgba(59, 130, 246, 0.22);
+                color: #eff6ff;
+                border-color: rgba(96, 165, 250, 0.35);
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__code-block {
+                padding: 12px;
+                border-radius: 12px;
+                background: rgba(2, 6, 23, 0.5);
+                border: 1px solid rgba(148, 163, 184, 0.16);
+                color: #e2e8f0;
+                white-space: pre-wrap;
+                word-break: break-word;
+                font-family: Consolas, "SFMono-Regular", monospace;
+                font-size: 11px;
+                line-height: 1.6;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__field-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+                margin-bottom: 6px;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__copy {
+                appearance: none;
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                border-radius: 999px;
+                padding: 4px 8px;
+                background: rgba(148, 163, 184, 0.12);
+                color: #cbd5e1;
+                cursor: pointer;
+                font-size: 10px;
+                font-weight: 700;
+                line-height: 1;
+                white-space: nowrap;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__copy[data-copied="true"] {
+                background: rgba(34, 197, 94, 0.18);
+                color: #dcfce7;
+                border-color: rgba(34, 197, 94, 0.28);
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__field {
+                padding: 10px 11px;
+                border-radius: 12px;
+                background: rgba(15, 23, 42, 0.34);
+                border: 1px solid rgba(148, 163, 184, 0.14);
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__label {
+                display: block;
+                margin-bottom: 4px;
+                color: #93c5fd;
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__value {
+                color: #f8fafc;
+                word-break: break-word;
+                white-space: pre-wrap;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__value[data-code="true"] {
+                font-family: Consolas, "SFMono-Regular", monospace;
+                font-size: 11px;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__actions {
+                display: flex;
+                gap: 8px;
+                margin-top: 14px;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__header-actions {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+            }
+            #${PANEL_ID}[data-collapsed="true"] .ruyi-xpath-picker__header {
+                margin-bottom: 0;
+                gap: 10px;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__button {
+                appearance: none;
+                border: 0;
+                border-radius: 10px;
+                padding: 9px 12px;
+                cursor: pointer;
+                font-size: 12px;
+                font-weight: 700;
+                transition: transform 0.16s ease, background 0.16s ease, opacity 0.16s ease;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__button:hover {
+                transform: translateY(-1px);
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__button--primary {
+                background: rgba(59, 130, 246, 0.92);
+                color: #eff6ff;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__button--ghost {
+                background: rgba(148, 163, 184, 0.18);
+                color: #e2e8f0;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__button--icon {
+                min-width: 34px;
+                padding: 8px 10px;
+                border-radius: 999px;
+                background: rgba(148, 163, 184, 0.18);
+                color: #e2e8f0;
+                line-height: 1;
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__button--secondary {
+                background: rgba(15, 23, 42, 0.26);
+                color: #e2e8f0;
+                border: 1px solid rgba(148, 163, 184, 0.18);
+            }
+            #${PANEL_ID} .ruyi-xpath-picker__button[disabled] {
+                opacity: 0.45;
+                cursor: not-allowed;
+                transform: none;
+            }
+            #${HIGHLIGHT_ID} {
+                position: absolute;
+                display: none;
+                border-radius: 12px;
+                border: 2px solid rgba(96, 165, 250, 0.95);
+                background: rgba(96, 165, 250, 0.12);
+                box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.28), 0 10px 30px rgba(37, 99, 235, 0.18);
+                pointer-events: none;
+                z-index: 2147483646;
+            }
+            @media (max-width: 640px) {
+                #${PANEL_ID} {
+                    right: 12px;
+                    bottom: 12px;
+                    width: calc(100vw - 24px);
+                    max-height: 58vh;
+                }
+                #${PANEL_ID} .ruyi-xpath-picker__actions {
+                    flex-direction: column;
+                }
+            }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function ensurePanel() {
+        if (!isTopWindow) {
+            return null;
+        }
+        let panel = document.getElementById(PANEL_ID);
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = PANEL_ID;
+            panel.setAttribute('data-collapsed', 'false');
+            panel.innerHTML = `
+                <div class="ruyi-xpath-picker__header">
+                    <div class="ruyi-xpath-picker__title">XPath Picker</div>
+                    <div class="ruyi-xpath-picker__header-actions">
+                        <div class="ruyi-xpath-picker__badge" data-role="status">待选择</div>
+                        <button type="button" class="ruyi-xpath-picker__button ruyi-xpath-picker__button--icon" data-action="toggle" aria-label="收起 XPath Picker">-</button>
+                    </div>
+                </div>
+                <p class="ruyi-xpath-picker__intro" data-role="intro">移动鼠标可预览目标，点击后锁定当前元素。</p>
+                <div class="ruyi-xpath-picker__tabs">
+                    <button type="button" class="ruyi-xpath-picker__tab" data-tab="info" data-active="true">Info</button>
+                    <button type="button" class="ruyi-xpath-picker__tab" data-tab="ruyipage" data-active="false">ruyiPage代码生成</button>
+                </div>
+                <div class="ruyi-xpath-picker__meta" data-role="meta"></div>
+                <div class="ruyi-xpath-picker__actions">
+                    <button type="button" class="ruyi-xpath-picker__button ruyi-xpath-picker__button--primary" data-action="unlock" disabled>继续选择</button>
+                    <button type="button" class="ruyi-xpath-picker__button ruyi-xpath-picker__button--secondary" data-action="pause">暂停选择</button>
+                    <button type="button" class="ruyi-xpath-picker__button ruyi-xpath-picker__button--ghost" data-action="toggle">收起</button>
+                </div>
+            `;
+            document.documentElement.appendChild(panel);
+            const unlockButton = panel.querySelector('[data-action="unlock"]');
+            const pauseButton = panel.querySelector('[data-action="pause"]');
+            const toggleButtons = panel.querySelectorAll('[data-action="toggle"]');
+            const tabs = panel.querySelectorAll('[data-tab]');
+            if (unlockButton) {
+                unlockButton.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    unlockSelection();
+                });
+            }
+            if (pauseButton) {
+                pauseButton.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    togglePaused();
+                });
+            }
+            toggleButtons.forEach((button) => {
+                button.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    toggleCollapsed();
+                });
+            });
+            tabs.forEach((button) => {
+                button.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    state.activeTab = button.getAttribute('data-tab') || 'info';
+                    syncTopUI();
+                });
+            });
+            panel.addEventListener('click', (event) => {
+                const copyButton = event.target.closest('[data-copy-value]');
+                if (!copyButton) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                copyText(copyButton.getAttribute('data-copy-value') || '', copyButton);
+            });
+        }
+        state.panel = panel;
+        return panel;
+    }
+
+    function ensureHighlight() {
+        let highlight = document.getElementById(HIGHLIGHT_ID);
+        if (!highlight) {
+            highlight = document.createElement('div');
+            highlight.id = HIGHLIGHT_ID;
+            document.documentElement.appendChild(highlight);
+        }
+        localState.highlight = highlight;
+        return highlight;
+    }
+
+    function getElementName(element) {
+        if (!element || !element.tagName) {
+            return '';
+        }
+        const tag = element.tagName.toLowerCase();
+        const id = element.id ? `#${element.id}` : '';
+        const nameAttr = element.getAttribute('name');
+        const ariaLabel = element.getAttribute('aria-label');
+        const dataTestId = element.getAttribute('data-testid') || element.getAttribute('data-test') || element.getAttribute('data-qa');
+        const className = typeof element.className === 'string'
+            ? element.className.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((item) => `.${item}`).join('')
+            : '';
+        const hints = [nameAttr && `name=${nameAttr}`, ariaLabel && `aria=${ariaLabel}`, dataTestId && `data=${dataTestId}`]
+            .filter(Boolean)
+            .slice(0, 1);
+        return [tag + id + className, ...hints].join(' ');
+    }
+
+    function normalizeText(text) {
+        return String(text || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function getVisibleText(element) {
+        if (!element) {
+            return '';
+        }
+        const text = normalizeText(element.innerText || element.textContent || '');
+        return text.length > 160 ? `${text.slice(0, 157)}...` : text;
+    }
+
+    function getFrameContextPath() {
+        const path = [];
+        let currentWindow = window;
+        while (currentWindow && currentWindow !== currentWindow.top) {
+            try {
+                const frame = currentWindow.frameElement;
+                if (!frame) {
+                    break;
+                }
+                const name = frame.getAttribute('name') || frame.getAttribute('title') || frame.id || frame.tagName.toLowerCase();
+                path.unshift(name);
+                currentWindow = currentWindow.parent;
+            } catch (e) {
+                path.unshift('cross-origin-frame');
+                break;
+            }
+        }
+        return path;
+    }
+
+    function getElementContext(element) {
+        const framePath = getFrameContextPath();
+        const parts = [];
+        if (framePath.length) {
+            parts.push(`iframe: ${framePath.join(' > ')}`);
+        } else {
+            parts.push('main document');
+        }
+
+        const root = element && typeof element.getRootNode === 'function' ? element.getRootNode() : null;
+        if (root instanceof ShadowRoot) {
+            parts.push(`shadow(open): ${root.host && root.host.tagName ? root.host.tagName.toLowerCase() : 'host'}`);
+        }
+
+        return parts.join(' | ');
+    }
+
+    function isInsideShadow(element) {
+        if (!element || typeof element.getRootNode !== 'function') {
+            return false;
+        }
+        return element.getRootNode() instanceof ShadowRoot;
+    }
+
+    function getShadowPath(element) {
+        const chain = [];
+        let current = element;
+        while (current && typeof current.getRootNode === 'function') {
+            const root = current.getRootNode();
+            if (!(root instanceof ShadowRoot)) {
+                break;
+            }
+            const host = root.host;
+            chain.unshift({
+                mode: 'open',
+                selector: getHostSelector(host),
+            });
+            current = host;
+        }
+        return chain;
+    }
+
+    function getViewportOffsetToTop() {
+        let left = 0;
+        let top = 0;
+        let currentWindow = window;
+        while (currentWindow && currentWindow !== currentWindow.top) {
+            try {
+                const frame = currentWindow.frameElement;
+                if (!frame) {
+                    break;
+                }
+                const rect = frame.getBoundingClientRect();
+                left += rect.left;
+                top += rect.top;
+                currentWindow = currentWindow.parent;
+            } catch (e) {
+                break;
+            }
+        }
+        return { left, top };
+    }
+
+    function getElementCenter(element) {
+        const rect = element.getBoundingClientRect();
+        const topOffset = getViewportOffsetToTop();
+        return {
+            x: Math.round(rect.left + rect.width / 2 + window.scrollX),
+            y: Math.round(rect.top + rect.height / 2 + window.scrollY),
+            topViewportLeft: rect.left + topOffset.left,
+            topViewportTop: rect.top + topOffset.top,
+            rect,
+        };
+    }
+
+    function escapeXPathLiteral(value) {
+        const text = String(value || '');
+        if (!text.includes('"')) {
+            return `"${text}"`;
+        }
+        if (!text.includes("'")) {
+            return `'${text}'`;
+        }
+        return 'concat(' + text.split('"').map((part, index, parts) => {
+            const pieces = [];
+            if (part) {
+                pieces.push(`"${part}"`);
+            }
+            if (index < parts.length - 1) {
+                pieces.push(`'"'`);
+            }
+            return pieces.join(', ');
+        }).filter(Boolean).join(', ') + ')';
+    }
+
+    function getXPathNodeName(element) {
+        if (!element || !element.tagName) {
+            return '*';
+        }
+        const tagName = element.tagName.toLowerCase();
+        const namespace = element.namespaceURI || '';
+        if (namespace && namespace !== 'http://www.w3.org/1999/xhtml') {
+            const localName = typeof element.localName === 'string' ? element.localName : tagName;
+            return `*[local-name()=${escapeXPathLiteral(localName)}]`;
+        }
+        return tagName;
+    }
+
+    function getSiblingIndex(element) {
+        let index = 1;
+        let sibling = element.previousElementSibling;
+        while (sibling) {
+            if ((sibling.namespaceURI || '') === (element.namespaceURI || '')
+                && sibling.tagName === element.tagName) {
+                index += 1;
+            }
+            sibling = sibling.previousElementSibling;
+        }
+        return index;
+    }
+
+    function countMatches(doc, expr) {
+        try {
+            return doc.evaluate(`count(${expr})`, doc, null, XPathResult.NUMBER_TYPE, null).numberValue;
+        } catch (e) {
+            return Number.POSITIVE_INFINITY;
+        }
+    }
+
+    function buildSegmentWithIndex(element) {
+        return `${getXPathNodeName(element)}[${getSiblingIndex(element)}]`;
+    }
+
+    function buildAncestorRelativeXPath(element, maxDepth) {
+        const segments = [];
+        let current = element;
+        let depth = 0;
+        while (current && current.nodeType === Node.ELEMENT_NODE && depth < maxDepth) {
+            segments.unshift(buildSegmentWithIndex(current));
+            const candidate = '//' + segments.join('/');
+            if (countMatches(current.ownerDocument, candidate) === 1) {
+                return candidate;
+            }
+            current = current.parentElement;
+            depth += 1;
+        }
+        return '';
+    }
+
+    function getStableAttributeSelector(element) {
+        const attrs = ['data-testid', 'data-test', 'data-qa', 'name', 'aria-label', 'placeholder', 'type', 'role', 'title'];
+        for (const attr of attrs) {
+            const value = normalizeText(element.getAttribute(attr));
+            if (!value) {
+                continue;
+            }
+            const expr = `//${getXPathNodeName(element)}[@${attr}=${escapeXPathLiteral(value)}]`;
+            if (countMatches(element.ownerDocument, expr) === 1) {
+                return expr;
+            }
+        }
+        return '';
+    }
+
+    function getAbsoluteXPath(element) {
+        if (!element || element.nodeType !== Node.ELEMENT_NODE) {
+            return '';
+        }
+        const segments = [];
+        let current = element;
+        while (current && current.nodeType === Node.ELEMENT_NODE) {
+            segments.unshift(buildSegmentWithIndex(current));
+            current = current.parentElement;
+        }
+        return '/' + segments.join('/');
+    }
+
+    function getRelativeXPath(element) {
+        if (!element || element.nodeType !== Node.ELEMENT_NODE) {
+            return '';
+        }
+        if (element.id) {
+            return `//*[@id=${escapeXPathLiteral(element.id)}]`;
+        }
+        const stableAttr = getStableAttributeSelector(element);
+        if (stableAttr) {
+            return stableAttr;
+        }
+
+        const ownText = normalizeText(Array.from(element.childNodes)
+            .filter((node) => node.nodeType === Node.TEXT_NODE)
+            .map((node) => node.textContent || '')
+            .join(' '));
+        if (ownText && ownText.length <= 80) {
+            const expr = `//${getXPathNodeName(element)}[normalize-space(text())=${escapeXPathLiteral(ownText)}]`;
+            if (countMatches(element.ownerDocument, expr) === 1) {
+                return expr;
+            }
+        }
+
+        const ancestorRelative = buildAncestorRelativeXPath(element, 5);
+        if (ancestorRelative) {
+            return ancestorRelative;
+        }
+
+        return getAbsoluteXPath(element);
+    }
+
+    function collectElementData(element) {
+        const center = getElementCenter(element);
+        return {
+            tag: element.tagName ? element.tagName.toLowerCase() : '',
+            name: getElementName(element),
+            text: getVisibleText(element),
+            absoluteXPath: getAbsoluteXPath(element),
+            relativeXPath: getRelativeXPath(element),
+            centerX: center.x,
+            centerY: center.y,
+            context: getElementContext(element),
+            framePath: getFrameContextPath(),
+            shadowPath: getShadowPath(element),
+            topViewportLeft: center.topViewportLeft,
+            topViewportTop: center.topViewportTop,
+            width: center.rect.width,
+            height: center.rect.height,
+            rect: center.rect,
+        };
+    }
+
+    function updateHighlight(element) {
+        const highlight = ensureHighlight();
+        if (!element || !document.documentElement.contains(element)) {
+            highlight.style.display = 'none';
+            return;
+        }
+        const rect = element.getBoundingClientRect();
+        highlight.style.display = 'block';
+        highlight.style.borderColor = state.mode === 'locked'
+            ? 'rgba(59, 130, 246, 0.98)'
+            : 'rgba(34, 197, 94, 0.95)';
+        highlight.style.background = state.mode === 'locked'
+            ? 'rgba(96, 165, 250, 0.12)'
+            : 'rgba(34, 197, 94, 0.10)';
+        highlight.style.left = `${rect.left + window.scrollX}px`;
+        highlight.style.top = `${rect.top + window.scrollY}px`;
+        highlight.style.width = `${Math.max(rect.width, 0)}px`;
+        highlight.style.height = `${Math.max(rect.height, 0)}px`;
+    }
+
+    function getEventElement(event) {
+        if (!event) {
+            return null;
+        }
+        const path = typeof event.composedPath === 'function' ? event.composedPath() : null;
+        if (Array.isArray(path)) {
+            for (const item of path) {
+                if (item instanceof Element) {
+                    return item;
+                }
+            }
+        }
+        return event.target instanceof Element ? event.target : null;
+    }
+
+    function updateTopHighlightFromData(data) {
+        if (!isTopWindow) {
+            return;
+        }
+        const highlight = ensureHighlight();
+        if (!data) {
+            highlight.style.display = 'none';
+            return;
+        }
+        highlight.style.display = 'block';
+        highlight.style.borderColor = state.mode === 'locked'
+            ? 'rgba(59, 130, 246, 0.98)'
+            : 'rgba(34, 197, 94, 0.95)';
+        highlight.style.background = state.mode === 'locked'
+            ? 'rgba(96, 165, 250, 0.12)'
+            : 'rgba(34, 197, 94, 0.10)';
+        highlight.style.left = `${Math.max(data.topViewportLeft + topWindowRef.scrollX, 0)}px`;
+        highlight.style.top = `${Math.max(data.topViewportTop + topWindowRef.scrollY, 0)}px`;
+        highlight.style.width = `${Math.max(data.width || 0, 0)}px`;
+        highlight.style.height = `${Math.max(data.height || 0, 0)}px`;
+    }
+
+    function getDisplayData() {
+        if (state.mode === 'locked' || state.mode === 'paused') {
+            return state.selectedData;
+        }
+        return state.hoverData;
+    }
+
+    function getHostSelector(host) {
+        if (!host) {
+            return '';
+        }
+        if (host.id) {
+            return `#${host.id}`;
+        }
+        return getRelativeXPath(host);
+    }
+
+    function getStatusText() {
+        if (state.mode === 'locked') {
+            return '已锁定';
+        }
+        if (state.mode === 'paused') {
+            return '已暂停';
+        }
+        return '待选择';
+    }
+
+    function quotePy(value) {
+        return JSON.stringify(String(value || ''));
+    }
+
+    function copyText(text, button) {
+        const value = String(text || '');
+        const markCopied = () => {
+            if (!button) {
+                return;
+            }
+            button.setAttribute('data-copied', 'true');
+            const original = button.getAttribute('data-copy-label') || '复制';
+            button.textContent = '已复制';
+            topWindowRef.setTimeout(() => {
+                button.removeAttribute('data-copied');
+                button.textContent = original;
+            }, 1200);
+        };
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(value).then(markCopied).catch(() => {
+                const textarea = document.createElement('textarea');
+                textarea.value = value;
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    markCopied();
+                } catch (e) {
+                }
+                textarea.remove();
+            });
+            return;
+        }
+
+        const textarea = document.createElement('textarea');
+        textarea.value = value;
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
+            markCopied();
+        } catch (e) {
+        }
+        textarea.remove();
+    }
+
+    function buildRuyiPageCode(data) {
+        if (!data) {
+            return '# 先点击一个元素，ruyiPage 代码会显示在这里';
+        }
+
+        const lines = [];
+        let currentVar = 'page';
+
+        lines.push('# ruyiPage generated snippet');
+        lines.push('# page 已经是 FirefoxPage / FirefoxTab 实例');
+
+        (data.framePath || []).forEach((frameName, index) => {
+            const frameVar = `frame${index + 1}`;
+            const selector = frameName && frameName !== 'iframe' ? `#${frameName}` : `index=${index}`;
+            if (selector.startsWith('#')) {
+                lines.push(`${frameVar} = ${currentVar}.get_frame(${quotePy(selector)})`);
+            } else {
+                lines.push(`${frameVar} = ${currentVar}.get_frame(${selector})`);
+            }
+            currentVar = frameVar;
+        });
+
+        const shadowPath = data.shadowPath || [];
+        shadowPath.forEach((shadow, index) => {
+            const hostVar = `shadow_host${index + 1}`;
+            const rootVar = `shadow_root${index + 1}`;
+            const hostSelector = shadow.selector || '';
+            lines.push(`${hostVar} = ${currentVar}.ele(${quotePy(hostSelector)})`);
+            lines.push(`${rootVar} = ${hostVar}.${shadow.mode === 'closed' ? 'closed_shadow_root' : 'shadow_root'}`);
+            currentVar = rootVar;
+        });
+
+        const primarySelector = data.relativeXPath || data.absoluteXPath || '';
+        if (primarySelector) {
+            lines.push(`target = ${currentVar}.ele(${quotePy('xpath:' + primarySelector)})`);
+        } else {
+            lines.push(`# 无法生成 XPath，建议手动补充 selector`);
+            lines.push(`target = ${currentVar}.ele(${quotePy(data.name || data.tag || '')})`);
+        }
+
+        if (data.shadowPath && data.shadowPath.length) {
+            lines.push('');
+            lines.push('# 如果页面暴露了 closed shadow 调试桥，也可以改成 with_shadow() 形式：');
+            lines.push('# with shadow_host1.with_shadow("open") as root:');
+            lines.push('#     target = root.ele("xpath:...")');
+        }
+
+        if (String(data.context || '').includes('shadow(') && (!data.shadowPath || !data.shadowPath.length)) {
+            lines.push('');
+            lines.push('# 注意：当前命中元素位于 shadow 场景，但未能还原 host 链。');
+            lines.push('# closed shadow 需要页面提供 __ruyiGetClosedShadowRoot 调试桥后，才能稳定生成访问代码。');
+        }
+
+        return lines.join('\n');
+    }
+
+    function syncTopUI() {
+        if (isTopWindow) {
+            renderFields();
+            updateTopHighlightFromData(getDisplayData());
+            return;
+        }
+        try {
+            if (topWindowRef && typeof topWindowRef.__ruyiInitXPathPicker === 'function') {
+                topWindowRef.__ruyiInitXPathPicker();
+            }
+        } catch (e) {
+        }
+    }
+
+    function renderFields() {
+        if (!isTopWindow) {
+            return;
+        }
+        const panel = ensurePanel();
+        const meta = panel.querySelector('[data-role="meta"]');
+        const intro = panel.querySelector('[data-role="intro"]');
+        const status = panel.querySelector('[data-role="status"]');
+        const unlockButton = panel.querySelector('[data-action="unlock"]');
+        const pauseButton = panel.querySelector('[data-action="pause"]');
+        const toggleButtons = panel.querySelectorAll('[data-action="toggle"]');
+        const tabs = panel.querySelectorAll('[data-tab]');
+        panel.setAttribute('data-collapsed', state.collapsed ? 'true' : 'false');
+
+        toggleButtons.forEach((button) => {
+            const isIcon = button.classList.contains('ruyi-xpath-picker__button--icon');
+            button.textContent = state.collapsed ? (isIcon ? '+' : '展开') : (isIcon ? '-' : '收起');
+            button.setAttribute('aria-label', state.collapsed ? '展开 XPath Picker' : '收起 XPath Picker');
+        });
+        tabs.forEach((button) => {
+            button.setAttribute('data-active', button.getAttribute('data-tab') === state.activeTab ? 'true' : 'false');
+        });
+
+        const data = getDisplayData();
+        status.textContent = getStatusText();
+        unlockButton.disabled = state.mode !== 'locked';
+        pauseButton.textContent = state.mode === 'paused' ? '恢复选择' : '暂停选择';
+
+        if (!data) {
+            intro.textContent = state.mode === 'paused'
+                ? '当前已暂停选择，点击“恢复选择”后可继续检查页面元素。'
+                : '移动鼠标可预览目标，点击页面元素后会锁定当前结果。';
+            meta.innerHTML = '';
+            return;
+        }
+
+        intro.textContent = state.mode === 'locked'
+            ? '当前结果已锁定，点击“继续选择”后可重新选择其他元素。'
+            : state.mode === 'paused'
+                ? '当前已暂停选择，保留最近一次锁定结果。'
+                : '当前为预览态，点击元素后会锁定此结果。';
+
+        if (state.activeTab === 'ruyipage') {
+            const rawCode = buildRuyiPageCode(data);
+            const code = rawCode
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            meta.innerHTML = `
+                <section class="ruyi-xpath-picker__field">
+                    <div class="ruyi-xpath-picker__field-header">
+                        <span class="ruyi-xpath-picker__label">ruyiPage代码生成</span>
+                        <button type="button" class="ruyi-xpath-picker__copy" data-copy-label="复制代码" data-copy-value="${rawCode.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}">复制代码</button>
+                    </div>
+                    <div class="ruyi-xpath-picker__code-block">${code}</div>
+                </section>
+            `;
+            return;
+        }
+
+        const fields = [
+            ['Tag', data.tag || '-'],
+            ['Name', data.name || '-'],
+            ['Text', data.text || '-'],
+            ['XPath (absolute)', data.absoluteXPath || '-', true, !!data.absoluteXPath, '复制绝对XPath'],
+            ['XPath (relative)', data.relativeXPath || '-', true, !!data.relativeXPath, '复制相对XPath'],
+            ['Center', `(${data.centerX}, ${data.centerY})`],
+            ['Context', data.context || '-'],
+        ];
+
+        meta.innerHTML = fields.map(([label, value, isCode, canCopy, copyLabel]) => `
+            <section class="ruyi-xpath-picker__field">
+                <div class="ruyi-xpath-picker__field-header">
+                    <span class="ruyi-xpath-picker__label">${label}</span>
+                    ${canCopy ? `<button type="button" class="ruyi-xpath-picker__copy" data-copy-label="${copyLabel}" data-copy-value="${String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}">${copyLabel}</button>` : ''}
+                </div>
+                <div class="ruyi-xpath-picker__value"${isCode ? ' data-code="true"' : ''}>${String(value)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')}</div>
+            </section>
+        `).join('');
+    }
+
+    function unlockSelection() {
+        state.mode = 'idle';
+        state.selectedData = null;
+        state.hoverData = null;
+        localState.selectedElement = null;
+        localState.hoverElement = null;
+        if (localState.highlight) {
+            localState.highlight.style.display = 'none';
+        }
+        syncTopUI();
+    }
+
+    function toggleCollapsed(forceValue) {
+        state.collapsed = typeof forceValue === 'boolean' ? forceValue : !state.collapsed;
+        syncTopUI();
+    }
+
+    function togglePaused() {
+        state.mode = state.mode === 'paused' ? 'idle' : 'paused';
+        if (state.mode === 'idle') {
+            state.hoverData = null;
+            localState.hoverElement = null;
+            updateHighlight(null);
+        } else if (localState.selectedElement && document.documentElement.contains(localState.selectedElement)) {
+            updateHighlight(localState.selectedElement);
+        } else {
+            updateHighlight(null);
+        }
+        syncTopUI();
+    }
+
+    function isPickerNode(node) {
+        return !!(node && node.closest && node.closest(`#${PANEL_ID}, #${HIGHLIGHT_ID}`));
+    }
+
+    function handleMove(event) {
+        const target = getEventElement(event);
+        if (state.mode !== 'idle' || isPickerNode(target)) {
+            return;
+        }
+        if (!(target instanceof Element)) {
+            return;
+        }
+        localState.hoverElement = target;
+        state.hoverData = collectElementData(target);
+        updateHighlight(target);
+        syncTopUI();
+    }
+
+    function handleClick(event) {
+        const target = getEventElement(event);
+        if (state.mode !== 'idle' || isPickerNode(target)) {
+            return;
+        }
+        if (!(target instanceof Element)) {
+            return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+        localState.selectedElement = target;
+        state.selectedData = collectElementData(target);
+        state.mode = 'locked';
+        updateHighlight(target);
+        syncTopUI();
+    }
+
+    function handleViewportChange() {
+        if (state.mode === 'locked' && localState.selectedElement && document.documentElement.contains(localState.selectedElement)) {
+            updateHighlight(localState.selectedElement);
+            syncTopUI();
+            return;
+        }
+        if (state.mode === 'paused' && localState.selectedElement && document.documentElement.contains(localState.selectedElement)) {
+            updateHighlight(localState.selectedElement);
+            syncTopUI();
+            return;
+        }
+        if (state.mode === 'idle' && localState.hoverElement && document.documentElement.contains(localState.hoverElement)) {
+            updateHighlight(localState.hoverElement);
+            syncTopUI();
+            return;
+        }
+        if (state.mode !== 'locked') {
+            updateHighlight(null);
+            syncTopUI();
+        }
+    }
+
+    function bindEvents() {
+        if (localState.handlersBound) {
+            return;
+        }
+        localState.moveHandler = handleMove;
+        localState.clickHandler = handleClick;
+        localState.scrollHandler = handleViewportChange;
+        localState.resizeHandler = handleViewportChange;
+        document.addEventListener('mousemove', localState.moveHandler, true);
+        document.addEventListener('click', localState.clickHandler, true);
+        window.addEventListener('scroll', localState.scrollHandler, true);
+        window.addEventListener('resize', localState.resizeHandler, true);
+        localState.handlersBound = true;
+    }
+
+    function init() {
+        if (!['idle', 'locked', 'paused'].includes(state.mode)) {
+            state.mode = 'idle';
+        }
+        ensureStyles();
+        if (isTopWindow) {
+            ensurePanel();
+        }
+        ensureHighlight();
+        bindEvents();
+        syncTopUI();
+    }
+
+    window.__ruyiInitXPathPicker = init;
+    topWindowRef.__ruyiInitXPathPicker = topWindowRef.__ruyiInitXPathPicker || init;
+    init();
+})();
+"""
 
     # ===== __call__ 快捷方式 =====
 
@@ -506,6 +1704,7 @@ class FirefoxBase(BasePage):
             if timeout:
                 Settings.bidi_timeout = old_timeout
 
+        self._reinject_xpath_picker_if_needed()
         return self
 
     def back(self) -> "FirefoxBase":
@@ -545,6 +1744,7 @@ class FirefoxBase(BasePage):
             ignore_cache=ignore_cache,
             wait=wait,
         )
+        self._reinject_xpath_picker_if_needed()
         return self
 
     def stop_loading(self) -> "FirefoxBase":
@@ -577,6 +1777,7 @@ class FirefoxBase(BasePage):
         # 先检查当前状态
         state = self.run_js("document.readyState")
         if state in ("interactive", "complete"):
+            self._reinject_xpath_picker_if_needed()
             return self
 
         # 轮询等待
@@ -584,6 +1785,7 @@ class FirefoxBase(BasePage):
         while time.time() < end_time:
             state = self.run_js("document.readyState")
             if state in ("interactive", "complete"):
+                self._reinject_xpath_picker_if_needed()
                 return self
             time.sleep(0.1)
 

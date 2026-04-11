@@ -59,6 +59,7 @@ class FirefoxOptions(object):
         self._fpfile = None  # 指纹配置文件路径
         self._private_mode = False  # Firefox 私密浏览模式
         self._user_prompt_handler = None  # session.UserPromptHandler
+        self._xpath_picker_enabled = False  # 页面 XPath 选择浮窗
 
     # ===== 属性读取 =====
 
@@ -144,6 +145,11 @@ class FirefoxOptions(object):
             if isinstance(self._user_prompt_handler, dict)
             else None
         )
+
+    @property
+    def xpath_picker_enabled(self):
+        """是否在启动时自动注入 XPath 选择浮窗。"""
+        return self._xpath_picker_enabled
 
     # ===== 链式设置方法 =====
 
@@ -437,6 +443,23 @@ class FirefoxOptions(object):
         self._private_mode = bool(on_off)
         return self
 
+    def enable_xpath_picker(self, on_off=True):
+        """设置是否在页面中启用 XPath 选择浮窗。
+
+        Args:
+            on_off: ``True`` 启用，``False`` 关闭。
+
+        Returns:
+            self
+
+        说明：
+            - 启用后会在页面右下角注入一个半透明磨砂玻璃浮窗。
+            - 点击页面元素时会锁定并显示元素名、文本、绝对/相对 XPath、中心点坐标。
+            - 点击浮窗中的“解锁”后，才会重新允许选择下一个元素。
+        """
+        self._xpath_picker_enabled = bool(on_off)
+        return self
+
     def _get_proxy_auth_credentials(self):
         """从 fpfile 中读取代理认证用户名密码。"""
         auth = self._read_httpauth_from_fpfile(self._fpfile)
@@ -510,6 +533,7 @@ class FirefoxOptions(object):
         user_dir=None,
         private=False,
         headless=False,
+        xpath_picker=False,
         window_size=(1280, 800),
         timeout_base=10,
         timeout_page_load=30,
@@ -527,6 +551,7 @@ class FirefoxOptions(object):
                 适用于希望复用登录态、Cookie、扩展时。
             private: 是否启用 Firefox 私密浏览模式。
             headless: 是否无头
+            xpath_picker: 是否启用页面 XPath 选择浮窗
             window_size: 窗口大小 (width, height)
             timeout_base: 基础超时
             timeout_page_load: 页面加载超时
@@ -550,6 +575,7 @@ class FirefoxOptions(object):
             self.set_user_dir(user_dir)
         self.private_mode(private)
         self.headless(headless)
+        self.enable_xpath_picker(xpath_picker)
         if window_size and len(window_size) == 2:
             self.set_window_size(window_size[0], window_size[1])
         self.set_timeouts(

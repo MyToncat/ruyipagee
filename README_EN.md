@@ -149,6 +149,52 @@ Notes:
 - If you only want a one-off session without reusing old data, you can also simply omit `user_dir`
 - Full example: `quickstart_private_mode.py`
 
+### Enable XPath Picker
+
+<p align="center">
+  <img src="images/xpath.png" width="900" alt="XPath Picker with ruyiPage code generation" />
+</p>
+
+```python
+from ruyipage import FirefoxOptions, FirefoxPage, launch
+
+# Option 1: enable it on FirefoxOptions
+opts = FirefoxOptions()
+opts.enable_xpath_picker(True)
+
+page = FirefoxPage(opts)
+page.get("https://www.example.com")
+
+# Option 2: use launch() directly
+page = launch(xpath_picker=True)
+page.get("https://www.example.com")
+```
+
+When enabled, a translucent frosted-glass panel appears in the bottom-right corner:
+
+- clicking an element locks the current result
+- the panel shows element name, text, absolute XPath, relative XPath, and center `(x, y)`
+- a built-in `ruyiPage code generation` tab generates ready-to-use locator code
+- iframe, nested iframe, and open shadow root chains are assembled automatically
+- `XPath (absolute)`, `XPath (relative)`, and `ruyiPage code generation` all support one-click copy
+- while locked, it will not switch to other elements
+- click `Continue Picking` to resume picking
+- click `Pause Picking` to stop intercepting page clicks temporarily
+- click `Collapse` to fold it into a bottom-right capsule and expand it again later
+
+Recommended user-facing example:
+
+```bash
+python examples/42_xpath_picker_complex_showcase.py
+```
+
+This showcase page covers:
+
+- regular page elements
+- same-origin iframes and nested iframes
+- open shadow roots
+- complex text nodes and SVG nodes
+
 ### Attach to an Already-Open Browser
 
 If Firefox is already open manually, or a fingerprint browser is started first, `ruyiPage` can attach to the existing instance directly.
@@ -1241,6 +1287,7 @@ Suggested order:
 - `35_native_bidi_drag.py`
 - `36_native_bidi_select.py`
 - `39_attach_exist_browser.py` auto-detect an attachable instance, then take over the already-open Firefox / fingerprint browser
+- `42_xpath_picker_complex_showcase.py` starts XPath picker and opens a showcase page with complex nodes, shadow roots, and nested iframes
 
 ---
 
