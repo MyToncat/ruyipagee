@@ -25,9 +25,14 @@
 [![GitHub stars](https://img.shields.io/github/stars/LoseNine/ruyipage?style=social)](https://github.com/LoseNine/ruyipage/stargazers)
 [![Downloads](https://static.pepy.tech/badge/ruyipage)](https://pepy.tech/project/ruyipage)
 
-Docs: <https://0xshoulderlab.site/automation>
+## Links
 
-AI automation analysis runtime skill: <https://github.com/d0ublecl1ck/ruyipage-dev>. Thanks to `d0ublecl1ck` for creating this skill.
+- Docs: <https://0xshoulderlab.site/automation>
+- PyPI: <https://pypi.org/project/ruyiPage/>
+- GitHub repository: <https://github.com/LoseNine/ruyipage>
+- AI automation analysis runtime skill: <https://github.com/LoseNine/ruyipage-skill?tab=readme-ov-file>
+- Firefox fingerprint browser project: <https://github.com/LoseNine/firefox-fingerprintBrowser>
+- WebDriver BiDi: <https://w3c.github.io/webdriver-bidi/>
 
 ---
 

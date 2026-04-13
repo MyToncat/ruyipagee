@@ -25,9 +25,14 @@
 [![GitHub stars](https://img.shields.io/github/stars/LoseNine/ruyipage?style=social)](https://github.com/LoseNine/ruyipage/stargazers)
 [![Downloads](https://static.pepy.tech/badge/ruyipage)](https://pepy.tech/project/ruyipage)
 
-📘 项目文档：<https://0xshoulderlab.site/automation>
+## 相关链接
 
-🧩 AI 自动化分析运行 Skill：<https://github.com/d0ublecl1ck/ruyipage-dev>，感谢 `d0ublecl1ck` 制作这个 skill。
+- 项目文档：<https://0xshoulderlab.site/automation>
+- PyPI：<https://pypi.org/project/ruyiPage/>
+- GitHub 仓库：<https://github.com/LoseNine/ruyipage>
+- AI 自动化分析运行 Skill：<https://github.com/LoseNine/ruyipage-skill?tab=readme-ov-file>
+- Firefox 指纹浏览器项目：<https://github.com/LoseNine/firefox-fingerprintBrowser>
+- WebDriver BiDi：<https://w3c.github.io/webdriver-bidi/>
 
 ---
 
