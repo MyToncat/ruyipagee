@@ -1116,11 +1116,14 @@ page.intercept.stop()
 拦截响应阶段（`responseStarted`），可读取、修改响应信息：
 
 ```python
-# 读取原始响应状态码和头
+# 读取原始响应状态码、头和响应体
 def handler(req):
     print(f"状态码: {req.response_status}")
     print(f"Content-Type: {req.response_headers.get('content-type')}")
     req.continue_response()
+    # start_responses 默认 collect_response=True，
+    # continue_response 后可直接读取响应体
+    print(f"响应体: {req.response_body}")
 
 page.intercept.start_responses(handler)
 ```

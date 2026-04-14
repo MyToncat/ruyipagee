@@ -1083,11 +1083,14 @@ page.intercept.stop()
 Intercept the `responseStarted` phase to read or modify response info:
 
 ```python
-# Read the original response status and headers
+# Read the original response status, headers and body
 def handler(req):
     print(f"Status: {req.response_status}")
     print(f"Content-Type: {req.response_headers.get('content-type')}")
     req.continue_response()
+    # start_responses enables collect_response=True by default,
+    # so response_body is available right after continue_response
+    print(f"Body: {req.response_body}")
 
 page.intercept.start_responses(handler)
 ```

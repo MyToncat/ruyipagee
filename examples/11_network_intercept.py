@@ -165,9 +165,11 @@ def test_network_intercept():
         page.intercept.stop()
 
         # ==========================================================
-        # 5) responseStarted 阶段读取响应信息
+        # 5) responseStarted 阶段读取响应信息 + 响应体
         # ==========================================================
-        print("\n5. responseStarted 阶段读取 response_status / response_headers:")
+        print("\n5. responseStarted 阶段读取 response_status / response_headers / response_body:")
+
+        captured_body = []
 
         def response_handler(req):
             if "/api/data" in req.url:
@@ -177,6 +179,11 @@ def test_network_intercept():
                     print(f"   响应 content-type: {ct}")
                 # 放行响应，不做修改
                 req.continue_response()
+                # start_responses 默认 collect_response=True，
+                # continue_response 后可直接读取响应体
+                body = req.response_body
+                captured_body.append(body)
+                print(f"   响应体: {body}")
             else:
                 req.continue_response()
 
