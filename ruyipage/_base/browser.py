@@ -449,22 +449,29 @@ class Firefox(object):
     _BROWSERS = {}  # {address: Firefox}
     _lock = threading.Lock()
 
-    def __new__(cls, addr_or_opts=None):
+    @classmethod
+    def _cache_key_for(cls, addr_or_opts=None):
+        """仅对显式 attach 场景启用地址级单例缓存。"""
         if isinstance(addr_or_opts, FirefoxOptions):
-            address = addr_or_opts.address
-        elif isinstance(addr_or_opts, str):
-            address = addr_or_opts
-        elif addr_or_opts is None:
-            address = "127.0.0.1:9222"
-        else:
-            address = str(addr_or_opts)
+            if not addr_or_opts.is_existing_only:
+                return None
+            return addr_or_opts.address
+
+        if isinstance(addr_or_opts, str):
+            return addr_or_opts
+
+        return None
+
+    def __new__(cls, addr_or_opts=None):
+        cache_key = cls._cache_key_for(addr_or_opts)
 
         with cls._lock:
-            if address in cls._BROWSERS:
-                return cls._BROWSERS[address]
+            if cache_key is not None and cache_key in cls._BROWSERS:
+                return cls._BROWSERS[cache_key]
             instance = super(Firefox, cls).__new__(cls)
             instance._initialized = False
-            cls._BROWSERS[address] = instance
+            if cache_key is not None:
+                cls._BROWSERS[cache_key] = instance
             return instance
 
     def __init__(self, addr_or_opts=None):
@@ -501,11 +508,14 @@ class Firefox(object):
         try:
             self._connect_or_launch()
             self._register_exit_cleanup()
+            with self._lock:
+                self._BROWSERS[self._address] = self
             self._initialized = True
         except Exception:
             # 初始化失败时移除单例，避免后续复用半初始化对象
             with self._lock:
-                self._BROWSERS.pop(self._address, None)
+                if self._BROWSERS.get(self._address) is self:
+                    self._BROWSERS.pop(self._address, None)
             self._initialized = False
             raise
 
@@ -871,26 +881,25 @@ class Firefox(object):
             self._options.set_port(port)
             self._address = self._options.address
 
-        # 先尝试连接
-        try:
-            if self._try_connect():
-                return
-        except BrowserConnectError as e:
-            if "__stuck_session__" in str(e):
-                # 仅在现有会话确实不可接管时，才回退到重启清理。
-                logger.warning("检测到不可接管的 Firefox 会话，尝试重启浏览器...")
-                self._restart_firefox_for_stuck_session()
-                # 重启后重新连接
-                for i in range(self._options.retry_times + 1):
-                    try:
-                        if self._try_connect():
-                            return
-                    except BrowserConnectError:
-                        pass
-                    time.sleep(self._options.retry_interval)
-
-        # 仅连接模式
         if self._options.is_existing_only:
+            # attach()/FirefoxPage('host:port') 这类显式接管场景才复用已有浏览器。
+            try:
+                if self._try_connect():
+                    return
+            except BrowserConnectError as e:
+                if "__stuck_session__" in str(e):
+                    # 仅在现有会话确实不可接管时，才回退到重启清理。
+                    logger.warning("检测到不可接管的 Firefox 会话，尝试重启浏览器...")
+                    self._restart_firefox_for_stuck_session()
+                    # 重启后重新连接
+                    for i in range(self._options.retry_times + 1):
+                        try:
+                            if self._try_connect():
+                                return
+                        except BrowserConnectError:
+                            pass
+                        time.sleep(self._options.retry_interval)
+
             raise BrowserConnectError(
                 "无法连接到 {}，请先启动 Firefox：\n"
                 "  firefox.exe --remote-debugging-port={}".format(
@@ -898,6 +907,8 @@ class Firefox(object):
                 )
             )
 
+        # launch()/FirefoxPage(opts) 场景应始终按当前 options 启动新实例，
+        # 避免复用已存在的普通窗口，导致 private/user_dir/headless 等参数失效。
         self._ensure_launch_port_available()
 
         # 启动浏览器
