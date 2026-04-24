@@ -54,12 +54,18 @@ If this project helps you, you are welcome to buy me a coffee and support contin
 
 ## Companion Projects
 
-If you plan to use `ruyiPage` for AI-driven automation analysis, advanced web data capture, or high-risk browser workflows, start with these two companion projects:
+If you plan to use `ruyiPage` for AI-driven automation analysis, advanced web data capture, or high-risk browser workflows, start with these companion resources:
 
-- **AI automation analysis runtime skill**
+- 📘 **Documentation / Automation Docs**
+  A central place for `ruyiPage` automation guidance, integration notes, and supporting project documentation: <https://0xshoulderlab.site/automation>
+- 🤖 **AI automation analysis runtime skill**
   A practical entry point for AI-assisted workflows and runtime guidance around `ruyiPage`, useful when you want to plug it into an analysis or automation pipeline: <https://github.com/LoseNine/ruyipage-skill?tab=readme-ov-file>
-- **Firefox fingerprint browser project**
+- 🦊 **Firefox fingerprint browser project**
   Intended for cases where you need a Firefox fingerprint environment, browser takeover, or more realistic automation behavior alongside `ruyiPage`: <https://github.com/LoseNine/firefox-fingerprintBrowser>
+- 🟨 **JavaScript implementation: ruyipage-js**
+  A companion implementation for the JavaScript / Node.js ecosystem, useful when you want to bring the `ruyiPage` approach and capabilities into JS-based projects: <https://github.com/GanFish404/ruyipage-js>
+- 🐹 **Go implementation: ruyipage-go**
+  A community-maintained Go implementation for teams that want to integrate Firefox automation capabilities into Go projects. Thanks to @pll177 for the implementation and maintenance: <https://github.com/pll177/ruyipage-go>
 
 ---
 
@@ -101,6 +107,14 @@ pip install ruyiPage --upgrade
 
 If this is your first installation, the command above also works as the default way to install the latest version.
 
+To enable **async (async/await) support**:
+
+```bash
+pip install ruyiPage[async] --upgrade
+```
+
+This additionally installs `greenlet` and `websockets`. The synchronous API remains completely unaffected.
+
 If you run the project from source, or distribute the source tree to students, install the project dependencies as well:
 
 ```bash
@@ -123,6 +137,31 @@ page.get("https://www.example.com")
 print(page.title)
 page.quit()
 ```
+
+### Async (async/await) launch
+
+```python
+import asyncio
+from ruyipage.aio import launch
+
+async def main():
+    page = await launch()
+    await page.get("https://www.example.com")
+    title = await page.get_title()
+    print(title)
+
+    el = await page.ele("#search")
+    await el.click_self()
+    await el.input("hello async")
+
+    await page.quit()
+
+asyncio.run(main())
+```
+
+The async API mirrors the synchronous API exactly -- just add `async/await`.
+Properties (e.g. `page.title`) become async methods (e.g. `await page.get_title()`).
+Full examples: `quickstart_bing_search_async.py` and `quickstart_cloudflare_async.py` in the project root.
 
 ### JS Event `isTrusted` Comparison
 
@@ -286,7 +325,7 @@ Notes:
 - `private=True` / `opts.private_mode(True)` adds the `-private` startup argument for Firefox
 - This is different from the default temporary `profile`
 - If you only want a one-off session without reusing old data, you can also simply omit `user_dir`
-- Full example: `quickstart_private_mode.py`
+- Full example: see the `examples/` directory
 
 ### Enable XPath Picker
 

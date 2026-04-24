@@ -56,11 +56,15 @@
 
 如果你准备把 `ruyiPage` 用在 AI 自动化分析、复杂网页采集或高风控页面场景，建议先看这些配套项目：
 
-- **AI 自动化分析运行 Skill**
+- 📘 **官方文档 / 自动化文档**
+  更系统地查看 `ruyiPage` 相关自动化说明、接入方式和配套能力说明：<https://0xshoulderlab.site/automation>
+- 🤖 **AI 自动化分析运行 Skill**
   面向 AI 协作和自动化分析场景的运行说明与实践入口，适合先了解如何把 `ruyiPage` 接进你的工作流：<https://github.com/LoseNine/ruyipage-skill?tab=readme-ov-file>
-- **Firefox 指纹浏览器项目**
+- 🦊 **Firefox 指纹浏览器项目**
   用于需要 Firefox 指纹环境、浏览器接管或更高真实度自动化场景，适合和 `ruyiPage` 搭配使用：<https://github.com/LoseNine/firefox-fingerprintBrowser>
-- **Go 语言实现：ruyipage-go**
+- 🟨 **JavaScript 实现：ruyipage-js**
+  面向 JavaScript / Node.js 生态的配套实现，适合希望在 JS 项目里接入 `ruyiPage` 思路与能力的场景：<https://github.com/GanFish404/ruyipage-js>
+- 🐹 **Go 语言实现：ruyipage-go**
   由社区实现的 Go 版本，适合需要在 Go 项目中接入 Firefox 自动化能力的场景。感谢 @pll177 的实现与维护：<https://github.com/pll177/ruyipage-go>
 
 ---
@@ -103,6 +107,14 @@ pip install ruyiPage --upgrade
 
 如果你是首次安装，也可以直接用上面的命令获取最新版。
 
+如果需要**异步（async/await）支持**：
+
+```bash
+pip install ruyiPage[async] --upgrade
+```
+
+这会额外安装 `greenlet` 和 `websockets`，同步 API 完全不受影响。
+
 如果你是从源码运行，或给学员分发项目源码，建议同时安装项目依赖：
 
 ```bash
@@ -125,6 +137,31 @@ page.get("https://www.example.com")
 print(page.title)
 page.quit()
 ```
+
+### 异步（async/await）启动
+
+```python
+import asyncio
+from ruyipage.aio import launch
+
+async def main():
+    page = await launch()
+    await page.get("https://www.example.com")
+    title = await page.get_title()
+    print(title)
+
+    el = await page.ele("#search")
+    await el.click_self()
+    await el.input("hello async")
+
+    await page.quit()
+
+asyncio.run(main())
+```
+
+异步 API 的方法名与同步版完全一致，只需加 `async/await`。
+属性（如 `page.title`）变为异步方法（如 `await page.get_title()`）。
+完整示例见根目录 `quickstart_bing_search_async.py` 和 `quickstart_cloudflare_async.py`。
 
 ### JS 事件 `isTrusted` 对比能力
 
@@ -288,7 +325,7 @@ page.quit()
 - `private=True` / `opts.private_mode(True)` 会为 Firefox 增加 `-private` 启动参数
 - 这和默认的临时 `profile` 不是一回事
 - 如果你只是想要一次性会话，不复用历史数据，不传 `user_dir` 也可以
-- 完整示例可参考根目录：`quickstart_private_mode.py`
+- 完整示例可参考 `examples/` 目录
 
 ### 启用 XPath Picker
 
@@ -1499,6 +1536,7 @@ page.extensions.uninstall(ext_id)
 - `36_native_bidi_select.py`
 - `39_attach_exist_browser.py` 自动探测可接管实例，再接管已打开的 Firefox/指纹浏览器
 - `42_xpath_picker_complex_showcase.py` 启动 XPath picker，并打开包含复杂节点、shadow root、嵌套 iframe 的综合展示页
+- `42_3_debug_px_context_probe.py` 直接打开 `debug_px.html`，打印 PX challenge iframe 的 browsing context 树，并尝试 attach 到 child context 做最小 DOM / canvas 诊断
 - `46_human_behavior_showcase.py` 演示 bezier / windmouse 两套拟人轨迹算法，并开启鼠标行为可视化
 
 ---
