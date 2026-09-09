@@ -5,6 +5,7 @@
 """
 
 import logging
+import time
 from typing import TYPE_CHECKING
 
 from .firefox_base import FirefoxBase
@@ -15,8 +16,16 @@ if TYPE_CHECKING:
 from .._base.browser import Firefox
 from .._configs.firefox_options import FirefoxOptions
 from .._bidi import browsing_context as bidi_context
+from ..errors import BrowserConnectError
 
 logger = logging.getLogger("ruyipage")
+
+_INITIAL_CONTEXT_WAIT_TIMEOUT = 3.0
+_INITIAL_CONTEXT_POLL_INTERVAL = 0.1
+
+
+def _is_valid_context_id(context_id):
+    return isinstance(context_id, str) and bool(context_id)
 
 
 class FirefoxPage(FirefoxBase):
@@ -39,22 +48,29 @@ class FirefoxPage(FirefoxBase):
     _type = "FirefoxPage"
     _PAGES = {}  # 单例缓存
 
-    def __new__(cls, addr_or_opts=None):
+    @classmethod
+    def _cache_key_for(cls, addr_or_opts=None):
+        """仅对显式 attach 场景启用地址级单例缓存。"""
         if isinstance(addr_or_opts, FirefoxOptions):
-            address = addr_or_opts.address
-        elif isinstance(addr_or_opts, str):
-            address = addr_or_opts
-        elif addr_or_opts is None:
-            address = "127.0.0.1:9222"
-        else:
-            address = str(addr_or_opts)
+            if not addr_or_opts.is_existing_only:
+                return None
+            return addr_or_opts.address
 
-        # 单例
-        if address in cls._PAGES:
-            return cls._PAGES[address]
+        if isinstance(addr_or_opts, str):
+            return addr_or_opts
+
+        return None
+
+    def __new__(cls, addr_or_opts=None):
+        cache_key = cls._cache_key_for(addr_or_opts)
+
+        if cache_key is not None:
+            if cache_key in cls._PAGES:
+                return cls._PAGES[cache_key]
 
         instance = super(FirefoxPage, cls).__new__(cls)
-        cls._PAGES[address] = instance
+        if cache_key is not None:
+            cls._PAGES[cache_key] = instance
         return instance
 
     def __init__(self, addr_or_opts=None):
@@ -68,15 +84,54 @@ class FirefoxPage(FirefoxBase):
         self._firefox = Firefox(addr_or_opts)
 
         # 获取第一个标签页的 context
-        tab_ids = self._firefox.tab_ids
-        if tab_ids:
-            ctx_id = tab_ids[0]
-        else:
-            # 如果没有标签页，创建一个
-            result = bidi_context.create(self._firefox.driver, "tab")
-            ctx_id = result.get("context", "")
+        ctx_id = self._get_initial_context_id()
 
         self._init_context(self._firefox, ctx_id)
+        self._apply_startup_window_size()
+
+    def _get_initial_context_id(self):
+        deadline = time.time() + _INITIAL_CONTEXT_WAIT_TIMEOUT
+        while time.time() < deadline:
+            tab_ids = [
+                ctx_id for ctx_id in self._firefox.tab_ids if _is_valid_context_id(ctx_id)
+            ]
+            if tab_ids:
+                return tab_ids[0]
+            time.sleep(_INITIAL_CONTEXT_POLL_INTERVAL)
+
+        for _ in range(3):
+            result = bidi_context.create(self._firefox.driver, "tab")
+            ctx_id = result.get("context", "")
+            if _is_valid_context_id(ctx_id):
+                return ctx_id
+            time.sleep(_INITIAL_CONTEXT_POLL_INTERVAL)
+
+        raise BrowserConnectError("无法获取可用的 Firefox browsingContext")
+
+    def _apply_startup_window_size(self):
+        options = getattr(self._firefox, "options", None)
+        size = getattr(options, "startup_window_size", None)
+        if not size or getattr(options, "is_existing_only", False):
+            return
+
+        try:
+            width, height = int(size[0]), int(size[1])
+        except (TypeError, ValueError, IndexError):
+            return
+
+        try:
+            self.window.normal()
+        except Exception as e:
+            logger.debug("Startup window normal failed: %s", e)
+
+        try:
+            set_size_only = getattr(self.window, "_set_size_only", None)
+            if callable(set_size_only):
+                set_size_only(width, height)
+            else:
+                self.window.set_size(width, height)
+        except Exception as e:
+            logger.debug("Startup window size apply failed: %s", e)
 
     @property
     def browser(self) -> "Firefox":
@@ -98,17 +153,26 @@ class FirefoxPage(FirefoxBase):
         """最新的标签页"""
         return self._firefox.latest_tab
 
-    def new_tab(self, url=None, background=False) -> "FirefoxTab":
+    def new_tab(self, url=None, background=False, user_context=None) -> "FirefoxTab":
         """新建标签页
 
         Args:
             url: 初始 URL
             background: 后台创建
+            user_context: 可选的 Firefox user context ID
 
         Returns:
             FirefoxTab
         """
-        return self._firefox.new_tab(url, background)
+        return self._firefox.new_tab(url, background, user_context=user_context)
+
+    def new_container_tab(self, url=None, background=False) -> "FirefoxTab":
+        """新建一个 Firefox container tab。"""
+        return self._firefox.new_container_tab(url=url, background=background)
+
+    def new_container_tabs(self, count, url=None, background=False) -> "list[FirefoxTab]":
+        """新建多个 Firefox container tabs。"""
+        return self._firefox.new_container_tabs(count=count, url=url, background=background)
 
     def get_tab(self, id_or_num=None, title=None, url=None) -> "FirefoxTab":
         """获取标签页

@@ -14,6 +14,12 @@ from queue import Queue, Empty
 
 from .._bidi import browser_module as bidi_browser
 from .._bidi import session as bidi_session
+from .._functions.sleep import sleep as _sleep
+from .._functions.queue_utils import queue_get as _queue_get
+
+import logging
+
+logger = logging.getLogger('ruyipage')
 
 
 class DownloadEvent(object):
@@ -86,6 +92,7 @@ class DownloadsManager(object):
         self._lock = threading.RLock()
         self._subscription_id = None
         self._listening = False
+        self._context_filter = {self._owner._context_id}
 
     @property
     def events(self):
@@ -123,8 +130,8 @@ class DownloadsManager(object):
                 单位：文件系统路径字符串。
                 常见值：绝对路径如 ``'E:/ruyipage/examples/downloads'``。
                 当 ``behavior='allow'`` 时通常与 ``path`` 配合使用。
-            contexts: 受影响的顶层 browsingContext ID 列表。
-                常见值：``[page.tab_id]``。传 ``None`` 时默认作用于当前页面。
+            contexts: 旧参数。当前 Firefox BiDi 下载策略不支持按 tab context
+                设置目录，请省略或改用 ``user_contexts``。
             user_contexts: 受影响的 user context ID 列表。
                 常见值：Firefox 容器标签页 ID 列表。与 ``contexts`` 互斥。
 
@@ -133,15 +140,9 @@ class DownloadsManager(object):
 
         适用场景：
             - 示例中切换 allow / deny 策略
-            - 测试特定 tab 的下载隔离行为
+            - 测试默认浏览器或 user context 的下载隔离行为
             - 统一替代散落的旧式下载路径设置代码
         """
-        if contexts is not None and user_contexts is not None:
-            raise ValueError("contexts 与 user_contexts 不能同时设置")
-
-        if contexts is None and user_contexts is None:
-            contexts = [self._owner._context_id]
-
         return bidi_browser.set_download_behavior(
             self._owner._driver._browser_driver,
             behavior=behavior,
@@ -168,8 +169,15 @@ class DownloadsManager(object):
         self.set_behavior("allow", path=path)
         return self._owner
 
-    def start(self):
+    def start(self, contexts=None, all_contexts=True):
         """开始监听当前页面的下载事件。
+
+        Args:
+            contexts: 要监听的 browsingContext ID 或 ID 列表。传入后会关闭
+                默认全局监听，只监听指定 context。
+            all_contexts: 是否监听当前 BiDi session 下所有 context。默认
+                ``True``，避免下载点击触发新窗口、新 tab、PDF viewer 或 VPN
+                跳转链路时漏掉下载事件。
 
         Returns:
             bool: ``True`` 表示已成功订阅；``False`` 表示订阅失败。
@@ -182,15 +190,20 @@ class DownloadsManager(object):
             self.stop()
 
         self.clear()
+        subscribe_contexts, context_filter = self._resolve_context_filter(
+            contexts,
+            all_contexts,
+        )
 
         try:
             result = bidi_session.subscribe(
                 self._owner._driver._browser_driver,
                 self.EVENTS,
-                contexts=[self._owner._context_id],
+                contexts=subscribe_contexts,
             )
             self._subscription_id = result.get("subscription")
-        except Exception:
+        except Exception as e:
+            logger.debug("订阅下载事件失败: %s", e)
             self._subscription_id = None
             self._listening = False
             return False
@@ -204,6 +217,7 @@ class DownloadsManager(object):
             "browsingContext.downloadEnd",
             self._on_download_end,
         )
+        self._context_filter = context_filter
         self._listening = True
         return True
 
@@ -288,7 +302,7 @@ class DownloadsManager(object):
         while time.time() < end_time:
             remaining = end_time - time.time()
             try:
-                event = self._queue.get(timeout=min(remaining, 0.2))
+                event = _queue_get(self._queue, timeout=min(remaining, 0.2))
             except Empty:
                 continue
 
@@ -371,7 +385,7 @@ class DownloadsManager(object):
         while time.time() < end_time:
             if self.file_exists(path, min_size=min_size):
                 return True
-            time.sleep(0.1)
+            _sleep(0.1)
         return False
 
     def _on_download_will_begin(self, params):
@@ -382,12 +396,28 @@ class DownloadsManager(object):
 
     def _push(self, method, params):
         context = (params or {}).get("context")
-        if context is not None and context != self._owner._context_id:
+        if (
+            self._context_filter is not None
+            and context is not None
+            and context not in self._context_filter
+        ):
             return
         event = DownloadEvent(method, params)
         with self._lock:
             self._events.append(event)
         self._queue.put(event)
+
+    def _resolve_context_filter(self, contexts=None, all_contexts=True):
+        if contexts is not None:
+            if isinstance(contexts, (list, tuple, set)):
+                contexts = list(contexts)
+            else:
+                contexts = [contexts]
+            return contexts, set(contexts)
+        if all_contexts:
+            return None, None
+        contexts = [self._owner._context_id]
+        return contexts, set(contexts)
 
     @staticmethod
     def _match(event, method=None, filename=None, status=None):

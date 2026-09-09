@@ -5,6 +5,11 @@ import time
 from queue import Empty, Queue
 
 from .._bidi import session as bidi_session
+from .._functions.queue_utils import queue_get as _queue_get
+
+import logging
+
+logger = logging.getLogger('ruyipage')
 
 
 class BidiEvent(object):
@@ -25,7 +30,7 @@ class BidiEvent(object):
         - ``request``: ``network.beforeRequestSent`` 里的请求对象
         - ``response``: ``network.responseStarted/responseCompleted`` 里的响应对象
         - ``error_text``: ``network.fetchError`` 的错误文本
-        - ``auth_challenge``: ``network.authRequired`` 的认证挑战信息
+        - ``auth_challenges``: ``network.authRequired`` 的认证挑战列表
     """
 
     def __init__(self, method, params):
@@ -39,7 +44,18 @@ class BidiEvent(object):
         self.response = self.params.get("response")
         self.is_blocked = self.params.get("isBlocked")
         self.error_text = self.params.get("errorText")
-        self.auth_challenge = self.params.get("authChallenge")
+        self.auth_challenges = (self.response or {}).get("authChallenges")
+        if self.auth_challenges is None:
+            legacy_challenge = self.params.get("authChallenge")
+            if legacy_challenge is not None:
+                self.auth_challenges = (
+                    legacy_challenge
+                    if isinstance(legacy_challenge, list)
+                    else [legacy_challenge]
+                )
+        self.auth_challenge = (
+            self.auth_challenges[0] if self.auth_challenges else None
+        )
         self.realm = self.params.get("realm")
         self.source = self.params.get("source")
         self.channel = self.params.get("channel")
@@ -116,7 +132,8 @@ class EventTracker(object):
                 contexts=ctxs,
             )
             self._subscription_id = result.get("subscription")
-        except Exception:
+        except Exception as e:
+            logger.debug("订阅事件失败: %s", e)
             self._subscription_id = None
             self._events = []
             self._listening = False
@@ -176,7 +193,7 @@ class EventTracker(object):
         while time.time() < end_time:
             remaining = end_time - time.time()
             try:
-                item = self._queue.get(timeout=min(remaining, 0.2))
+                item = _queue_get(self._queue, timeout=min(remaining, 0.2))
             except Empty:
                 continue
             if event is None or item.method == event:

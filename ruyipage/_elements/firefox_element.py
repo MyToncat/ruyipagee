@@ -10,11 +10,13 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from .._base.base import BaseElement
-from .._functions.bidi_values import parse_value, make_shared_ref
+from .._functions.bidi_values import JS_FAILED, parse_value, make_shared_ref
 from .._functions.keys import Keys
+from .._functions.sleep import sleep as _sleep
 from .._bidi import script as bidi_script
 from ..errors import (
     ElementLostError,
+    ElementGeometryError,
     JavaScriptError,
     CanNotClickError,
     NoRectError,
@@ -24,6 +26,12 @@ from ..errors import (
 from .._functions.settings import Settings
 
 logger = logging.getLogger("ruyipage")
+
+_GEOMETRY_FAILURE_HINT = (
+    "这通常说明浏览器的 BiDi 对象序列化异常（常见于定制 Firefox 内核），"
+    "而非元素真的没有尺寸。可开启 DEBUG 日志查看 script.callFunction 的原始返回，"
+    "或更换/升级 Firefox 内核后重试。"
+)
 
 
 if TYPE_CHECKING:
@@ -232,19 +240,35 @@ class FirefoxElement(BaseElement):
 
     @property
     def size(self) -> dict:
-        """元素尺寸 {'width': int, 'height': int}"""
-        return self._run_safe("""(el) => {
+        """元素尺寸 {'width': int, 'height': int}
+
+        Raises:
+            ElementGeometryError: 浏览器未能返回可用的尺寸
+        """
+        return self._read_geometry(
+            """(el) => {
             const r = el.getBoundingClientRect();
             return {width: Math.round(r.width), height: Math.round(r.height)};
-        }""") or {"width": 0, "height": 0}
+        }""",
+            ("width", "height"),
+            "尺寸",
+        )
 
     @property
     def location(self) -> dict:
-        """元素位置 {'x': int, 'y': int}"""
-        return self._run_safe("""(el) => {
+        """元素位置 {'x': int, 'y': int}
+
+        Raises:
+            ElementGeometryError: 浏览器未能返回可用的坐标
+        """
+        return self._read_geometry(
+            """(el) => {
             const r = el.getBoundingClientRect();
             return {x: Math.round(r.x), y: Math.round(r.y)};
-        }""") or {"x": 0, "y": 0}
+        }""",
+            ("x", "y"),
+            "坐标",
+        )
 
     @property
     def pseudo(self) -> dict:
@@ -268,22 +292,34 @@ class FirefoxElement(BaseElement):
 
     @property
     def closed_shadow_root(self) -> "FirefoxElement | None":
-        """尝试获取 closed shadowRoot（仅当页面暴露调试桥接函数时可用）。
+        """获取 closed shadowRoot。
 
         说明：
             - 标准 DOM API 无法直接读取 closed shadowRoot。
-            - 若页面定义了 `window.__ruyiGetClosedShadowRoot(el)`，
-              则可通过该桥接函数在自动化测试中访问。
-            - 未暴露桥接函数或读取失败时返回 None。
+            - 这里使用 Firefox BiDi 的 privileged 序列化结果，不注入脚本、
+              不设置页面全局变量，也不探测页面桥接函数。
+            - 当前 Firefox 不支持该 remote 序列化能力，或元素没有 closed
+              shadowRoot 时返回 None。
         """
+        # Firefox serializes Element.openOrClosedShadowRoot in the remote
+        # privileged layer; this does not install or probe any page bridge.
         result = self._call_js_on_self_raw(
-            """(el) => {
-                if (typeof window.__ruyiGetClosedShadowRoot !== 'function') return null;
-                return window.__ruyiGetClosedShadowRoot(el);
-            }"""
+            "(el) => el",
+            serialization_options={"maxDomDepth": 1},
         )
-        if result and result.get("type") == "node":
-            return FirefoxElement._from_node(self._owner, result)
+        if not result or result.get("type") != "node":
+            return None
+
+        shadow_root = (result.get("value") or {}).get("shadowRoot")
+        if not isinstance(shadow_root, dict):
+            return None
+
+        shadow_value = shadow_root.get("value") or {}
+        if str(shadow_value.get("mode", "")).lower() != "closed":
+            return None
+
+        if shadow_root.get("type") == "node":
+            return FirefoxElement._from_node(self._owner, shadow_root)
         return None
 
     @contextmanager
@@ -456,14 +492,18 @@ class FirefoxElement(BaseElement):
         else:
             # 优先使用原生 BiDi 滚轮将元素带入视口，避免生成非原生点击事件
             self._owner.scroll.to_see(self, center=True)
-            time.sleep(0.1)
-            pos = self._run_safe("""(el) => {
+            _sleep(0.1)
+            pos = self._read_geometry(
+                """(el) => {
                 const r = el.getBoundingClientRect();
                 return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)};
-            }""")
+            }""",
+                ("x", "y"),
+                "可点击坐标",
+            )
 
-            if not pos or (pos.get("x", 0) == 0 and pos.get("y", 0) == 0):
-                raise RuntimeError("无法获取元素可点击坐标，请确认元素在视口内")
+            if pos["x"] == 0 and pos["y"] == 0:
+                raise NoRectError("元素可点击坐标为 (0, 0)，请确认元素已渲染并在视口内")
 
             # 使用 input.performActions
             x, y = pos["x"], pos["y"]
@@ -654,7 +694,7 @@ class FirefoxElement(BaseElement):
         self._run_safe(
             '(el) => el.scrollIntoView({block: "center", inline: "nearest"})'
         )
-        time.sleep(0.1)
+        _sleep(0.1)
         pos = self._get_center()
         if pos:
             self._owner._driver._browser_driver.run(
@@ -760,8 +800,8 @@ class FirefoxElement(BaseElement):
                 target_elem._run_safe(
                     '(el) => el.scrollIntoView({block: "center", inline: "nearest"})'
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("拖拽前预滚动失败: %s", e)
 
             start = self._get_center()
             end = target_elem._get_center()
@@ -1158,7 +1198,7 @@ class FirefoxElement(BaseElement):
                 return elements
             if time.time() >= end_time:
                 break
-            time.sleep(0.3)
+            _sleep(0.3)
 
         return []
 
@@ -1229,6 +1269,33 @@ class FirefoxElement(BaseElement):
 
     # ===== 内部方法 =====
 
+    def _read_geometry(self, func_declaration, keys, what):
+        """读取元素几何值，读不到时报错而不是伪造 0。
+
+        历史行为是把失败静默回落成全 0，使得“元素真的没有尺寸”和
+        “几何信息读取失败”无法区分，也掩盖了内核序列化异常。
+
+        Raises:
+            ElementGeometryError: 调用失败或返回结果缺少预期字段
+        """
+        result = self._run_safe(func_declaration)
+
+        if result is JS_FAILED:
+            raise ElementGeometryError(
+                "无法获取元素{}：浏览器没有返回结果。{}".format(
+                    what, _GEOMETRY_FAILURE_HINT
+                )
+            )
+
+        if not isinstance(result, dict) or any(key not in result for key in keys):
+            raise ElementGeometryError(
+                "无法获取元素{}：浏览器返回了不完整的结果 {!r}。{}".format(
+                    what, result, _GEOMETRY_FAILURE_HINT
+                )
+            )
+
+        return result
+
     def _run_safe(self, func_declaration, *args):
         """在元素上安全执行 JS 函数，自动处理 ElementLostError
 
@@ -1278,7 +1345,7 @@ class FirefoxElement(BaseElement):
         # 但也可能是合法的 None 返回值。如果有丢失标记则重试。
         return result
 
-    def _call_js_on_self_raw(self, func_declaration, *args):
+    def _call_js_on_self_raw(self, func_declaration, *args, serialization_options=None):
         """在元素上执行 JS 函数，返回原始 BiDi 结果
 
         当遇到 'no such node' 错误时，尝试 _refresh_id() 一次后重试。
@@ -1291,6 +1358,16 @@ class FirefoxElement(BaseElement):
             BiDi RemoteValue 字典
         """
         from .._functions.bidi_values import serialize_value
+
+        if serialization_options is None:
+            # maxObjectDepth 显式声明为 null（不限深度）。W3C 默认即为 null，
+            # 但部分定制内核在未收到该字段时会按 0 处理，导致 {width, height}
+            # 这类普通对象被序列化成空对象。
+            serialization_options = {
+                "maxDomDepth": 0,
+                "maxObjectDepth": None,
+                "includeShadowTree": "open",
+            }
 
         # 构建参数：第一个是 self 的 SharedReference，后面是额外参数
         arguments = [make_shared_ref(self._shared_id, self._handle)]
@@ -1308,7 +1385,7 @@ class FirefoxElement(BaseElement):
                 self._owner._context_id,
                 func_declaration,
                 arguments=arguments,
-                serialization_options={"maxDomDepth": 0, "includeShadowTree": "open"},
+                serialization_options=serialization_options,
             )
 
             if result.get("type") == "exception":
@@ -1324,10 +1401,7 @@ class FirefoxElement(BaseElement):
                             self._owner._context_id,
                             func_declaration,
                             arguments=arguments,
-                            serialization_options={
-                                "maxDomDepth": 0,
-                                "includeShadowTree": "open",
-                            },
+                            serialization_options=serialization_options,
                         )
                         if retry_result.get("type") == "exception":
                             raise ElementLostError(
@@ -1341,7 +1415,7 @@ class FirefoxElement(BaseElement):
                             "元素引用已失效: {}".format(self._shared_id)
                         )
                 logger.debug("JS 执行异常: %s", err_text)
-                return None
+                return JS_FAILED
 
             return result.get("result", {})
 
@@ -1349,16 +1423,55 @@ class FirefoxElement(BaseElement):
             raise
         except Exception as e:
             logger.debug("_call_js_on_self 失败: %s", e)
+            return JS_FAILED
+
+    def _get_center(self, scroll=True):
+        """获取元素中心坐标
+
+        Args:
+            scroll: 是否先滚动到可见区域。False 时仅读取当前坐标。
+
+        Returns:
+            ``{'x': int, 'y': int}``；元素确实没有可视区域时返回 None。
+
+        Raises:
+            ElementGeometryError: 坐标读取动作本身失败
+        """
+        if scroll:
+            script = """(el) => {
+                el.scrollIntoView({block: "center", inline: "nearest", behavior: "instant"});
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 && r.height === 0) return null;
+                return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)};
+            }"""
+        else:
+            script = """(el) => {
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 && r.height === 0) return null;
+                return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)};
+            }"""
+
+        result = self._run_safe(script)
+
+        if result is JS_FAILED:
+            raise ElementGeometryError(
+                "无法获取元素中心坐标：浏览器没有返回结果。{}".format(
+                    _GEOMETRY_FAILURE_HINT
+                )
+            )
+
+        # JS 显式返回 null 表示元素没有盒子，是合法结果。
+        if result is None:
             return None
 
-    def _get_center(self):
-        """获取元素中心坐标（先滚动到可见区域）"""
-        return self._run_safe("""(el) => {
-            el.scrollIntoView({block: "center", inline: "nearest"});
-            const r = el.getBoundingClientRect();
-            if (r.width === 0 && r.height === 0) return null;
-            return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2)};
-        }""")
+        if not isinstance(result, dict) or "x" not in result or "y" not in result:
+            raise ElementGeometryError(
+                "无法获取元素中心坐标：浏览器返回了不完整的结果 {!r}。{}".format(
+                    result, _GEOMETRY_FAILURE_HINT
+                )
+            )
+
+        return result
 
     def _make_shared_ref(self):
         """创建 SharedReference"""

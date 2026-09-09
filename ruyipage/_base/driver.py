@@ -4,17 +4,47 @@
 实现同步阻塞式 API 的关键：
 - BrowserBiDiDriver: 管理单一 WebSocket 连接，后台线程接收消息
 - ContextDriver: 轻量包装器，为每个 tab/frame 注入 context 参数
+
+异步支持（可选）：
+  安装 ruyiPage[async] 后，run() 方法在 greenlet 异步上下文中
+  自动切换到异步路径（await_ → asyncio.Future），不阻塞事件循环。
+  同步路径完全不受影响。
 """
 
 import json
+import time
 import threading
 import logging
 
-from queue import Queue, Empty
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue, Empty, Full
 
 from ..errors import BiDiError, PageDisconnectedError
 
 logger = logging.getLogger("ruyipage")
+
+# 事件缓冲上限。高流量页面（大量 network 订阅 + 多标签页）下，
+# 若消费端跟不上生产端，无上限队列会持续吃内存直到进程崩溃。
+_EVENT_QUEUE_MAX = 10000
+
+# immediate 回调的执行线程数与待执行上限。
+# 历史实现是每个事件新起一个线程，事件风暴时会瞬间创建上千个线程。
+_IMMEDIATE_WORKERS = 8
+_IMMEDIATE_MAX_PENDING = 256
+
+# 异步支持检测（greenlet 未安装时为 False，同步路径零开销）
+_HAS_ASYNC = False
+_in_async_greenlet = None
+_await_ = None
+
+try:
+    from .._async.greenlet_bridge import _in_async_greenlet as _iag, await_ as _aw
+
+    _HAS_ASYNC = True
+    _in_async_greenlet = _iag
+    _await_ = _aw
+except ImportError:
+    pass
 
 
 class BrowserBiDiDriver(object):
@@ -27,16 +57,24 @@ class BrowserBiDiDriver(object):
     _BROWSERS = {}  # {address: BrowserBiDiDriver}
     _lock = threading.Lock()
 
-    def __new__(cls, address):
+    def __new__(cls, address, shared=True):
+        # 自己启动的 Firefox 不走单例：并发启动时两个实例可能短暂落在同一个
+        # 端口上，若共用 driver，后来者的 stop() 会直接掐断先来者的 WebSocket。
+        if not shared:
+            instance = super(BrowserBiDiDriver, cls).__new__(cls)
+            instance._initialized = False
+            instance._shared = False
+            return instance
         with cls._lock:
             if address in cls._BROWSERS:
                 return cls._BROWSERS[address]
             instance = super(BrowserBiDiDriver, cls).__new__(cls)
             instance._initialized = False
+            instance._shared = True
             cls._BROWSERS[address] = instance
             return instance
 
-    def __init__(self, address):
+    def __init__(self, address, shared=True):
         if self._initialized:
             return
         self._initialized = True
@@ -55,8 +93,13 @@ class BrowserBiDiDriver(object):
         # key=(event_method, context_or_None) -> callback
         self._event_handlers = {}
         self._immediate_event_handlers = {}
-        self._event_queue = Queue()
+        self._event_queue = Queue(maxsize=_EVENT_QUEUE_MAX)
         self._handlers_lock = threading.Lock()
+
+        # immediate 回调执行池（懒创建，未注册 immediate 回调时零开销）
+        self._immediate_pool = None
+        self._immediate_pending = 0
+        self._immediate_lock = threading.Lock()
 
         # 线程
         self._recv_th = None
@@ -68,9 +111,23 @@ class BrowserBiDiDriver(object):
         self.session_id = None
         self.alert_flag = False
 
+        # trace 诊断（延迟创建）
+        self._tracer = None
+
+        # 异步支持（可选，由 switch_to_async() 设置）
+        self._mode = "sync"  # "sync" | "async"
+
     @property
     def is_running(self):
         return self._is_running
+
+    @property
+    def tracer(self):
+        """获取或创建 Tracer 实例（browser 级单例）"""
+        if self._tracer is None:
+            from .._units.tracer import Tracer
+            self._tracer = Tracer()
+        return self._tracer
 
     def start(self, ws_url=None):
         """连接 WebSocket 并启动后台线程
@@ -121,9 +178,11 @@ class BrowserBiDiDriver(object):
         """关闭连接和线程（公共方法）"""
         self._stop()
 
-        # 清理单例
-        with self._lock:
-            self._BROWSERS.pop(self.address, None)
+        # 清理单例：只移除自己，别把同地址上别人的注册顺手删掉
+        if getattr(self, "_shared", True):
+            with self._lock:
+                if self._BROWSERS.get(self.address) is self:
+                    self._BROWSERS.pop(self.address, None)
 
         self._initialized = False
 
@@ -138,6 +197,7 @@ class BrowserBiDiDriver(object):
         """
         self._closing = True
         self._is_running = False
+        self._mode = "sync"
 
         if self._ws:
             try:
@@ -156,7 +216,13 @@ class BrowserBiDiDriver(object):
             self._method_results.clear()
 
         # 唤醒事件线程
-        self._event_queue.put(None)
+        self._offer_event(None)
+
+        with self._immediate_lock:
+            pool = self._immediate_pool
+            self._immediate_pool = None
+        if pool is not None:
+            pool.shutdown(wait=False)
 
     def reconnect(self, ws_url=None):
         """重新连接 WebSocket
@@ -182,8 +248,30 @@ class BrowserBiDiDriver(object):
 
         self.start(ws_url)
 
+    async def switch_to_async(self):
+        """将驱动标记为异步模式
+
+        不关闭现有的同步 WebSocket 连接——session 和事件订阅都绑定在上面。
+        异步模式下，driver.run() 在 greenlet 内检测到异步上下文后，
+        会通过 await_() 挂起 greenlet 而非阻塞线程。
+
+        核心机制：
+        - 同步 recv_loop 线程继续运行，接收消息并将命令响应放入 Queue
+        - driver.run() 在 greenlet 内通过 await_(queue_get_async()) 等待响应
+        - queue_get_async 在 executor 中运行，不阻塞事件循环
+        - 事件回调由同步 event_loop 线程照常分发
+        """
+        if self._mode == "async":
+            return
+        self._mode = "async"
+        logger.debug("BrowserBiDiDriver 已切换到异步模式: %s", self.address)
+
     def run(self, method, params=None, timeout=None):
-        """同步发送 BiDi 命令并等待响应
+        """发送 BiDi 命令并等待响应
+
+        同步上下文：阻塞等待（Queue.get），使用 websocket-client。
+        异步上下文（greenlet 内）：通过 await_ 走 asyncio.Future，
+        使用 websockets 库，不阻塞事件循环。
 
         Args:
             method: BiDi 方法名，如 'browsingContext.navigate'
@@ -205,6 +293,18 @@ class BrowserBiDiDriver(object):
 
             timeout = Settings.bidi_timeout
 
+        # ── 异步路径（greenlet 内，走 asyncio）──
+        if (
+            _HAS_ASYNC
+            and self._mode == "async"
+            and _in_async_greenlet()
+        ):
+            return self._run_in_greenlet(method, params, timeout)
+
+        # ── 同步路径 ──
+        _t0 = time.monotonic()
+        _ctx = (params or {}).get("context")
+
         # 生成唯一 ID
         with self._id_lock:
             self._cur_id += 1
@@ -224,6 +324,11 @@ class BrowserBiDiDriver(object):
         except Exception as e:
             with self._results_lock:
                 self._method_results.pop(cmd_id, None)
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "send_failed"},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
             raise PageDisconnectedError("发送消息失败: {}".format(e))
 
         # 阻塞等待响应
@@ -232,9 +337,19 @@ class BrowserBiDiDriver(object):
         except Empty:
             with self._results_lock:
                 self._method_results.pop(cmd_id, None)
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "timeout", "timeout": timeout},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="timeout")
             raise BiDiError("timeout", "命令超时: {} ({}s)".format(method, timeout))
 
         if result is None:
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "disconnected"},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
             raise PageDisconnectedError("连接已断开")
 
         with self._results_lock:
@@ -242,12 +357,25 @@ class BrowserBiDiDriver(object):
 
         # 处理错误响应
         if result.get("type") == "error":
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method,
+                    {"error": result.get("error", ""), "msg": result.get("message", "")[:200]},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
             raise BiDiError(
                 result.get("error", "unknown error"),
                 result.get("message", ""),
                 result.get("stacktrace", ""),
             )
 
+        # 成功
+        _elapsed = (time.monotonic() - _t0) * 1000
+        if self._tracer and self._tracer.enabled:
+            from .._units.tracer import _summarize_params
+            self._tracer.record(
+                "bidi_cmd", method, _summarize_params(params),
+                context_id=_ctx, elapsed_ms=_elapsed)
         return result.get("result", {})
 
     def set_callback(self, event, callback, context=None, immediate=False):
@@ -269,9 +397,119 @@ class BrowserBiDiDriver(object):
             else:
                 handlers[key] = callback
 
+        # 异步模式下同步路由到异步桥
+
     def remove_callback(self, event, context=None, immediate=False):
         """移除事件回调"""
         self.set_callback(event, None, context, immediate)
+
+    def _run_in_greenlet(self, method, params, timeout):
+        """在 greenlet 异步上下文中发送命令并等待响应
+
+        复用现有的同步 WebSocket 连接和 recv_loop 线程。
+        命令通过同步 ws.send() 发出（在 executor 中执行以避免阻塞事件循环），
+        响应由 recv_loop 放入 Queue，通过 await_(queue_get_async) 异步等待。
+
+        这样不需要新建 WebSocket 连接，session 和事件订阅都保持有效。
+        """
+        import asyncio
+
+        _t0 = time.monotonic()
+        _ctx = (params or {}).get("context")
+
+        # 生成唯一 ID（锁在 executor 中持有，不阻塞事件循环 — 极短操作）
+        with self._id_lock:
+            self._cur_id += 1
+            cmd_id = self._cur_id
+
+        # 创建响应队列
+        response_queue = Queue()
+        with self._results_lock:
+            self._method_results[cmd_id] = response_queue
+
+        # 构建并发送消息 — 通过 executor 执行同步 ws.send()
+        msg = {"id": cmd_id, "method": method, "params": params or {}}
+        try:
+            raw = json.dumps(msg)
+
+            async def _send():
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._sync_send, raw)
+
+            _await_(_send())
+            logger.debug("发送(异步) -> %d %s", cmd_id, method)
+        except Exception as e:
+            with self._results_lock:
+                self._method_results.pop(cmd_id, None)
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "send_failed"},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
+            raise PageDisconnectedError("发送消息失败: {}".format(e))
+
+        # 异步等待响应 — 通过 executor 运行 Queue.get() 避免阻塞事件循环
+        async def _wait():
+            loop = asyncio.get_running_loop()
+            try:
+                return await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, lambda: response_queue.get(timeout=timeout)
+                    ),
+                    timeout=timeout + 1,  # 外层 timeout 比内层宽松，优先让 Queue.get 超时
+                )
+            except asyncio.TimeoutError:
+                raise Empty()
+
+        try:
+            result = _await_(_wait())
+        except Empty:
+            with self._results_lock:
+                self._method_results.pop(cmd_id, None)
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "timeout", "timeout": timeout},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="timeout")
+            raise BiDiError("timeout", "命令超时: {} ({}s)".format(method, timeout))
+
+        if result is None:
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method, {"error": "disconnected"},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
+            raise PageDisconnectedError("连接已断开")
+
+        with self._results_lock:
+            self._method_results.pop(cmd_id, None)
+
+        # 处理错误响应
+        if result.get("type") == "error":
+            _elapsed = (time.monotonic() - _t0) * 1000
+            if self._tracer and self._tracer.enabled:
+                self._tracer.record(
+                    "bidi_cmd", method,
+                    {"error": result.get("error", ""), "msg": result.get("message", "")[:200]},
+                    context_id=_ctx, elapsed_ms=_elapsed, status="error")
+            raise BiDiError(
+                result.get("error", "unknown error"),
+                result.get("message", ""),
+                result.get("stacktrace", ""),
+            )
+
+        _elapsed = (time.monotonic() - _t0) * 1000
+        if self._tracer and self._tracer.enabled:
+            from .._units.tracer import _summarize_params
+            self._tracer.record(
+                "bidi_cmd", method, _summarize_params(params),
+                context_id=_ctx, elapsed_ms=_elapsed)
+        return result.get("result", {})
+
+    def _sync_send(self, raw):
+        """线程安全的同步发送（供 executor 调用）"""
+        with self._ws_send_lock:
+            self._ws.send(raw)
 
     def _recv_loop(self):
         """后台线程：接收所有 WebSocket 消息并分发
@@ -317,6 +555,29 @@ class BrowserBiDiDriver(object):
                         msg_type,
                     )
 
+                    # ── 被动 trace / 网络观察钩子 ──
+                    # 不使用 set_callback，与 page.listen / page.intercept 零冲突
+                    if self._tracer:
+                        _t = self._tracer
+                        if _t.enabled:
+                            _t.record("bidi_event", event_method,
+                                      {"context": event_context},
+                                      context_id=event_context)
+                        # 网络事件被动记录（始终记录，不依赖 trace_enabled）
+                        if event_method in (
+                            "network.responseCompleted",
+                            "network.fetchError",
+                        ):
+                            _req = event_params.get("request", {})
+                            _resp = event_params.get("response", {})
+                            _t.record_net(
+                                event_method.split(".")[-1],
+                                _req.get("url", ""),
+                                _req.get("method", ""),
+                                _resp.get("status", 0),
+                                context_id=event_context,
+                            )
+
                     # alert_flag 处理
                     if event_method == "browsingContext.userPromptOpened":
                         self.alert_flag = True
@@ -334,8 +595,11 @@ class BrowserBiDiDriver(object):
                         ):
                             self._handle_immediate_event(handler, event_params)
 
-                    # 放入事件队列（由事件线程处理）
-                    self._event_queue.put((event_method, event_context, event_params))
+                    # 放入事件队列（由事件线程处理）。
+                    # recv 循环绝不能阻塞，队列满时丢弃最旧的事件。
+                    self._offer_event(
+                        (event_method, event_context, event_params)
+                    )
                 else:
                     # 未知消息类型
                     if msg_type is not None:
@@ -354,11 +618,34 @@ class BrowserBiDiDriver(object):
                             pass
                 break
 
+    def _offer_event(self, item):
+        """把事件放入队列；队列满时丢弃最旧的事件。
+
+        本方法运行在 recv 循环中，一旦阻塞就会造成 WebSocket 消息积压和命令
+        响应延迟，因此宁可丢弃最旧的事件也不等待空位。
+        """
+        try:
+            self._event_queue.put_nowait(item)
+            return
+        except Full:
+            pass
+
+        try:
+            self._event_queue.get_nowait()
+        except Empty:
+            pass
+
+        try:
+            self._event_queue.put_nowait(item)
+        except Full:
+            logger.warning(
+                "事件队列已满，丢弃事件: %s", item[0] if item else item
+            )
+
     def _handle_immediate_event(self, handler, event_params):
-        """在短生命周期线程中执行 immediate 回调
+        """在线程池中执行 immediate 回调
 
         避免在 recv 循环中直接执行可能耗时的回调导致消息积压。
-        每个回调启动一个独立短线程执行。
 
         Args:
             handler: 回调函数
@@ -370,9 +657,28 @@ class BrowserBiDiDriver(object):
                 handler(event_params)
             except Exception as e:
                 logger.error("Immediate 事件处理错误: %s", e)
+            finally:
+                with self._immediate_lock:
+                    self._immediate_pending -= 1
 
-        t = threading.Thread(target=_run, name="ruyipage-immediate-evt", daemon=True)
-        t.start()
+        with self._immediate_lock:
+            if self._immediate_pending >= _IMMEDIATE_MAX_PENDING:
+                logger.warning("immediate 回调积压过多，丢弃本次事件回调")
+                return
+            if self._immediate_pool is None:
+                self._immediate_pool = ThreadPoolExecutor(
+                    max_workers=_IMMEDIATE_WORKERS,
+                    thread_name_prefix="ruyipage-immediate-evt",
+                )
+            self._immediate_pending += 1
+            pool = self._immediate_pool
+
+        try:
+            pool.submit(_run)
+        except RuntimeError:
+            # 池已随连接关闭而 shutdown
+            with self._immediate_lock:
+                self._immediate_pending -= 1
 
     def _handle_event_loop(self):
         """后台线程：处理事件队列"""

@@ -34,6 +34,17 @@ class PageSetter(object):
         self._owner.set_viewport(width, height, device_pixel_ratio)
         return self._owner
 
+    def window_size(self, width, height, device_pixel_ratio=None):
+        """设置浏览器窗口外框尺寸。
+
+        ``window.inner*`` / ``page.rect.viewport_size`` 由浏览器自然计算。
+        如需模拟视口请使用 ``viewport()``；如需 hook ``screen.*`` 请使用
+        ``page.emulation.set_screen_size()``。
+        """
+        return self._owner.set_window_size(
+            width, height, device_pixel_ratio=device_pixel_ratio
+        )
+
     def headers(self, headers):
         """设置额外请求头
 

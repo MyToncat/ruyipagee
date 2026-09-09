@@ -2,19 +2,24 @@
 """BiDi browsingContext 模块命令"""
 
 
-def navigate(driver, context, url, wait="complete"):
+_UNSET = object()
+
+
+def navigate(driver, context, url, wait="complete", timeout=None):
     """导航到指定 URL
 
     Args:
         context: browsingContext ID
         url: 目标 URL
         wait: 等待策略 - 'none'/'interactive'/'complete'
+        timeout: 超时时间（秒），None 使用默认值
 
     Returns:
         {'navigation': str|None, 'url': str}
     """
     return driver.run(
-        "browsingContext.navigate", {"context": context, "url": url, "wait": wait}
+        "browsingContext.navigate", {"context": context, "url": url, "wait": wait},
+        timeout=timeout,
     )
 
 
@@ -60,7 +65,7 @@ def create(
             常见值：Firefox 容器标签页 ID。用于在指定 user context 中创建 tab。
 
     Returns:
-        dict: ``{'context': str}``，其中 ``context`` 是新创建的 browsingContext ID。
+        dict: 包含 ``context``，并可能包含 ``userContext``。
 
     适用场景：
         - 新建 tab 或 window
@@ -112,7 +117,7 @@ def capture_screenshot(driver, context, origin="viewport", format_=None, clip=No
         origin: 'viewport' 或 'document'
         format_: None 或 {'type': 'image/png'|'image/jpeg', 'quality': 0-1}
         clip: None 或裁剪区域
-              - 视口裁剪: {'type': 'viewport', 'x': num, 'y': num, 'width': num, 'height': num}
+              - 方框裁剪: {'type': 'box', 'x': num, 'y': num, 'width': num, 'height': num}
               - 元素裁剪: {'type': 'element', 'element': SharedReference}
 
     Returns:
@@ -269,56 +274,81 @@ def locate_nodes(
     return driver.run("browsingContext.locateNodes", params)
 
 
-def set_viewport(driver, context, width=None, height=None, device_pixel_ratio=None):
-    """设置视口大小。
-
-    Args:
-        context: 目标 browsingContext ID。
-            常见值：当前页面的 ``page.tab_id``。
-        width: 视口宽度。
-            单位：CSS 像素。
-            常见值：``800``、``1280``、``375``。
-        height: 视口高度。
-            单位：CSS 像素。
-            常见值：``600``、``720``、``667``。
-        device_pixel_ratio: 设备像素比。
-            常见值：``1``、``2``、``3``。
-
-    Returns:
-        dict: BiDi 命令返回结果，通常为空字典。
-
-    适用场景：
-        - 调整桌面视口大小
-        - 配合移动端模拟设置 viewport + DPR
-    """
-    params = {"context": context}
-    if width is not None and height is not None:
+def set_viewport(
+    driver, context=None, width=_UNSET, height=_UNSET,
+    device_pixel_ratio=_UNSET,
+    timeout=None, user_contexts=None
+):
+    params = {}
+    if context is not None and user_contexts is not None:
+        raise ValueError("context and user_contexts cannot both be provided")
+    if context is None and user_contexts is None:
+        raise ValueError("context or user_contexts is required")
+    if context is not None:
+        params["context"] = context
+    if user_contexts is not None:
+        values = user_contexts if isinstance(user_contexts, list) else [user_contexts]
+        if not values:
+            raise ValueError("user_contexts must not be empty")
+        params["userContexts"] = values
+    if (width is _UNSET) != (height is _UNSET):
+        raise ValueError("width and height must be provided together")
+    if width is None and height is None:
+        params["viewport"] = None
+    elif width is not _UNSET:
         params["viewport"] = {"width": width, "height": height}
-    if device_pixel_ratio is not None:
+    if device_pixel_ratio is not _UNSET:
         params["devicePixelRatio"] = device_pixel_ratio
-    return driver.run("browsingContext.setViewport", params)
+    return driver.run("browsingContext.setViewport", params, timeout=timeout)
 
 
-def set_bypass_csp(driver, context, enabled=True):
-    """设置是否绕过内容安全策略（CSP）。
+def set_bypass_csp(
+    driver, context=None, enabled=True, bypass=_UNSET, contexts=None,
+    user_contexts=None
+):
+    if bypass is _UNSET:
+        bypass = True if enabled else None
+    if bypass is not True and bypass is not None:
+        raise ValueError("bypass must be True or None")
+    if context is not None:
+        if contexts or user_contexts:
+            raise ValueError("context cannot be combined with contexts or user_contexts")
+        contexts = [context]
+    if contexts and user_contexts:
+        raise ValueError("contexts and user_contexts cannot both be provided")
+    params = {"bypass": bypass}
+    if contexts:
+        params["contexts"] = contexts if isinstance(contexts, list) else [contexts]
+    if user_contexts:
+        params["userContexts"] = user_contexts if isinstance(user_contexts, list) else [user_contexts]
+    return driver.run("browsingContext.setBypassCSP", params)
+
+
+def start_screencast(
+    driver, context, mime_type=None, video=None, audio=None, stream_options=None
+):
+    params = {"context": context}
+    if mime_type is not None:
+        params["mimeType"] = mime_type
+    if stream_options is not None:
+        if video is not None or audio is not None:
+            raise ValueError("stream_options cannot be combined with video or audio")
+        video = stream_options.get("video")
+        audio = stream_options.get("audio")
+    if video is not None:
+        params["video"] = video
+    if audio is not None:
+        params["audio"] = audio
+    return driver.run("browsingContext.startScreencast", params)
+
+
+def stop_screencast(driver, screencast):
+    """停止 screencast 录制。
 
     Args:
-        context: 目标 browsingContext ID。
-            常见值：当前页面的 ``page.tab_id``。
-        enabled: 是否启用绕过。
-            常见值：``True`` 启用、``False`` 禁用。
+        screencast: ``start_screencast()`` 返回的 screencast ID。
 
     Returns:
-        dict: BiDi 命令返回结果，通常为空字典。
-
-    适用场景：
-        - 需要验证浏览器是否支持标准 ``browsingContext.setBypassCSP``
-        - 不希望退回 JS 兼容逻辑，而是直接判断标准命令可用性
-
-    说明：
-        - 当前 Firefox 若未实现该命令，调用方应拿到异常并标记为“不支持”。
-        - 这里不再把 ``unknown command`` 吞成 ``None``，避免示例误判为成功。
+        dict: ``{"path": str}``，失败时可能包含 ``error`` 字段。
     """
-    return driver.run(
-        "browsingContext.setBypassCSP", {"context": context, "enabled": enabled}
-    )
+    return driver.run("browsingContext.stopScreencast", {"screencast": screencast})

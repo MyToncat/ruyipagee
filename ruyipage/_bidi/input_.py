@@ -334,7 +334,23 @@ def build_human_mouse_path(start, end):
     return _apply_jitter(raw, max_norm, max_tan) if random.random() < 0.75 else raw
 
 
-def build_human_click_actions(tx, ty, sx=None, sy=None):
+def _clamp_point(x, y, min_x=None, max_x=None, min_y=None, max_y=None):
+    """将坐标限制在给定边界内。"""
+    if min_x is not None:
+        x = max(min_x, x)
+    if max_x is not None:
+        x = min(max_x, x)
+    if min_y is not None:
+        y = max(min_y, y)
+    if max_y is not None:
+        y = min(max_y, y)
+    return x, y
+
+
+def build_human_click_actions(
+    tx, ty, sx=None, sy=None,
+    min_x=None, max_x=None, min_y=None, max_y=None,
+):
     """构建完整的拟人点击 BiDi actions（含轨迹+悬停抖动+点击+点击后移开）。
 
     Args:
@@ -342,6 +358,10 @@ def build_human_click_actions(tx, ty, sx=None, sy=None):
         ty: 目标 Y 坐标 (视口像素)。
         sx: 起始 X 坐标。为 None 时随机生成。默认 None。
         sy: 起始 Y 坐标。为 None 时随机生成。默认 None。
+        min_x: 允许的最小 X。默认 None。
+        max_x: 允许的最大 X。默认 None。
+        min_y: 允许的最小 Y。默认 None。
+        max_y: 允许的最大 Y。默认 None。
 
     Returns:
         list: BiDi actions 列表，可直接传入 input.performActions。
@@ -352,12 +372,15 @@ def build_human_click_actions(tx, ty, sx=None, sy=None):
     if sy is None:
         sy = random.randint(100, 600)
 
+    tx, ty = _clamp_point(tx, ty, min_x, max_x, min_y, max_y)
+    sx, sy = _clamp_point(sx, sy, min_x, max_x, min_y, max_y)
+
     path = build_human_mouse_path((sx, sy), (tx, ty))
     acts = [{'type': 'pointerMove', 'x': int(sx), 'y': int(sy), 'duration': 0}]
 
     prev_x, prev_y = sx, sy
     for px, py in path:
-        bx, by = int(px), int(py)
+        bx, by = _clamp_point(int(px), int(py), min_x, max_x, min_y, max_y)
         dist = math.hypot(bx - prev_x, by - prev_y)
         acts.append({'type': 'pointerMove', 'x': bx, 'y': by,
                      'duration': max(8, int(dist * random.uniform(1.5, 3.0)))})
@@ -365,8 +388,12 @@ def build_human_click_actions(tx, ty, sx=None, sy=None):
 
     # 悬停抖动
     for _ in range(random.randint(2, 4)):
+        hover_x, hover_y = _clamp_point(
+            tx + random.randint(-2, 2), ty + random.randint(-1, 1),
+            min_x, max_x, min_y, max_y,
+        )
         acts.append({'type': 'pointerMove',
-                     'x': tx + random.randint(-2, 2), 'y': ty + random.randint(-1, 1),
+                     'x': hover_x, 'y': hover_y,
                      'duration': random.randint(20, 50)})
     acts.append({'type': 'pointerMove', 'x': tx, 'y': ty, 'duration': random.randint(15, 30)})
     acts.append({'type': 'pause', 'duration': random.randint(80, 300)})
@@ -374,8 +401,12 @@ def build_human_click_actions(tx, ty, sx=None, sy=None):
     acts.append({'type': 'pause', 'duration': random.randint(80, 180)})
     acts.append({'type': 'pointerUp', 'button': 0})
     # 点击后自然移开
+    drift_x, drift_y = _clamp_point(
+        tx + random.randint(5, 20), ty + random.randint(-5, 5),
+        min_x, max_x, min_y, max_y,
+    )
     acts.append({'type': 'pointerMove',
-                 'x': tx + random.randint(5, 20), 'y': ty + random.randint(-5, 5),
+                 'x': drift_x, 'y': drift_y,
                  'duration': random.randint(80, 150)})
 
     return [{'type': 'pointer', 'id': 'mouse0',
@@ -448,10 +479,21 @@ def set_files(driver, context, element, files):
     })
 
 
-def build_pen_action(x, y, pressure=0.5, tilt_x=0, tilt_y=0,
-                     twist=0, tangential_pressure=0.0, button=0, duration=50,
-                     altitude_angle=None, azimuth_angle=None,
-                     width=None, height=None):
+def build_pen_action(
+    x,
+    y,
+    pressure=0.5,
+    tilt_x=0,
+    tilt_y=0,
+    twist=0,
+    tangential_pressure=0.0,
+    button=0,
+    duration=50,
+    altitude_angle=None,
+    azimuth_angle=None,
+    width=None,
+    height=None,
+):
     """构建 pen (触控笔) pointer 动作序列。
 
     按照 W3C BiDi 规范，pen 类型的 pointer action 支持额外的
@@ -461,8 +503,8 @@ def build_pen_action(x, y, pressure=0.5, tilt_x=0, tilt_y=0,
         x:                     目标 X 坐标 (视口像素)。
         y:                     目标 Y 坐标 (视口像素)。
         pressure:              笔尖压力，范围 [0.0, 1.0]。默认 0.5。
-        tilt_x:                X 轴倾斜角度，范围 [-90, 90]。默认 0。
-        tilt_y:                Y 轴倾斜角度，范围 [-90, 90]。默认 0。
+        tilt_x:                已从 BiDi 删除的兼容参数；仅 0/None 可用。
+        tilt_y:                已从 BiDi 删除的兼容参数；仅 0/None 可用。
         twist:                 旋转角度，范围 [0, 359]。默认 0。
         tangential_pressure:   切向压力，范围 [-1.0, 1.0]。默认 0.0。
         button:                鼠标按钮编号。默认 0。
@@ -477,27 +519,37 @@ def build_pen_action(x, y, pressure=0.5, tilt_x=0, tilt_y=0,
     Returns:
         list: BiDi actions 列表，可直接传入 perform_actions。
     """
+    if tilt_x not in (0, None) or tilt_y not in (0, None):
+        raise ValueError(
+            "tilt_x and tilt_y were removed from WebDriver BiDi; "
+            "use altitude_angle and azimuth_angle"
+        )
+    common = {
+        'pressure': pressure,
+        'twist': twist,
+        'tangentialPressure': tangential_pressure,
+    }
+    if altitude_angle is not None:
+        common['altitudeAngle'] = altitude_angle
+    if azimuth_angle is not None:
+        common['azimuthAngle'] = azimuth_angle
+    if width is not None:
+        common['width'] = width
+    if height is not None:
+        common['height'] = height
+
     move_action = {
-        'type': 'pointerMove', 'x': x, 'y': y, 'duration': duration,
-        'pressure': pressure, 'tiltX': tilt_x, 'tiltY': tilt_y,
-        'twist': twist, 'tangentialPressure': tangential_pressure
+        'type': 'pointerMove',
+        'x': x,
+        'y': y,
+        'duration': duration,
+        **common,
     }
     down_action = {
-        'type': 'pointerDown', 'button': button,
-        'pressure': pressure, 'tiltX': tilt_x, 'tiltY': tilt_y
+        'type': 'pointerDown',
+        'button': button,
+        **common,
     }
-
-    # W3C BiDi 规范扩展属性
-    if altitude_angle is not None:
-        move_action['altitudeAngle'] = altitude_angle
-        down_action['altitudeAngle'] = altitude_angle
-    if azimuth_angle is not None:
-        move_action['azimuthAngle'] = azimuth_angle
-        down_action['azimuthAngle'] = azimuth_angle
-    if width is not None:
-        move_action['width'] = width
-    if height is not None:
-        move_action['height'] = height
 
     return [{
         'type': 'pointer',
@@ -552,38 +604,42 @@ def build_key_action(keys):
     return [{'type': 'key', 'id': 'kbd0', 'actions': acts}]
 
 
-def build_wheel_action(x, y, delta_x=0, delta_y=120, delta_z=0,
-                       delta_mode=0, duration=0, origin="viewport"):
+def build_wheel_action(
+    x,
+    y,
+    delta_x=0,
+    delta_y=120,
+    delta_z=0,
+    delta_mode=0,
+    duration=0,
+    origin="viewport",
+):
     """构建 wheel (滚轮) 滚动动作。
 
-    按照 W3C BiDi 规范，wheel scroll 动作支持三轴滚动
-    以及 deltaMode 控制滚动单位。
+    按照 W3C BiDi 规范构建以 CSS 像素为单位的二维滚动动作。
 
     Args:
         x:          滚动位置的 X 坐标 (视口像素)。
         y:          滚动位置的 Y 坐标 (视口像素)。
         delta_x:    水平滚动量。正值向右，负值向左。默认 0。
         delta_y:    垂直滚动量。正值向下，负值向上。默认 120。
-        delta_z:    Z 轴滚动量 (用于 3D 滚动设备)。默认 0。
-        delta_mode: 滚动单位模式。默认 0。
-                    - 0: 像素 (pixel)
-                    - 1: 行 (line)
-                    - 2: 页 (page)
+        delta_z:    已删除的兼容参数；仅 0/None 可用。
+        delta_mode: 已删除的兼容参数；仅 0/None 可用。
         duration:   滚动动画时长 (毫秒)。默认 0。
         origin:     坐标参考原点。"viewport"(默认) / "pointer" / 元素引用。
 
     Returns:
         list: BiDi actions 列表，可直接传入 perform_actions。
     """
+    if delta_z not in (0, None) or delta_mode not in (0, None):
+        raise ValueError(
+            "delta_z and delta_mode are not part of WebDriver BiDi wheel actions"
+        )
     action = {
         'type': 'scroll',
         'x': x, 'y': y,
         'deltaX': delta_x, 'deltaY': delta_y,
     }
-    if delta_z != 0:
-        action['deltaZ'] = delta_z
-    if delta_mode != 0:
-        action['deltaMode'] = delta_mode
     if duration != 0:
         action['duration'] = duration
     if origin != "viewport":

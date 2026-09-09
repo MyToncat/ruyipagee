@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
 """BiDi browser 模块命令"""
 
+import os
+
 
 def close(driver):
     """关闭浏览器"""
     return driver.run("browser.close")
 
 
-def create_user_context(driver):
+def create_user_context(
+    driver, accept_insecure_certs=None, proxy=None, unhandled_prompt_behavior=None
+):
     """创建用户上下文（类似容器标签页）。
 
     Returns:
@@ -17,7 +21,16 @@ def create_user_context(driver):
         - 创建隔离的浏览器 user context
         - 在测试中模拟不同容器环境
     """
-    return driver.run("browser.createUserContext")
+    params = {}
+    if accept_insecure_certs is not None:
+        params["acceptInsecureCerts"] = accept_insecure_certs
+    if proxy is not None:
+        params["proxy"] = proxy
+    if unhandled_prompt_behavior is not None:
+        params["unhandledPromptBehavior"] = unhandled_prompt_behavior
+    if not params:
+        return driver.run("browser.createUserContext")
+    return driver.run("browser.createUserContext", params)
 
 
 def get_user_contexts(driver):
@@ -64,9 +77,9 @@ def get_client_windows(driver):
 
 
 def set_client_window_state(
-    driver, client_window, state=None, width=None, height=None, x=None, y=None
+    driver, client_window, state="normal", width=None, height=None, x=None, y=None
 ):
-    """设置窗口状态（Firefox 私有扩展，非 W3C 标准）。
+    """设置窗口状态（W3C WebDriver BiDi 标准命令）。
 
     Args:
         client_window: 窗口 ID。
@@ -83,15 +96,20 @@ def set_client_window_state(
             单位：屏幕像素。常见值：``0``、``80``。
 
     Returns:
-        dict: BiDi 命令返回结果，通常为空字典。
+        dict: 更新后的 ``ClientWindowInfo``。
 
     适用场景：
         - 验证窗口状态切换
         - 设置窗口大小与位置
     """
-    params = {"clientWindow": client_window}
-    if state:
-        params["state"] = state
+    states = {"normal", "minimized", "maximized", "fullscreen"}
+    if state not in states:
+        raise ValueError("state must be normal, minimized, maximized, or fullscreen")
+    geometry = (width, height, x, y)
+    if state != "normal" and any(value is not None for value in geometry):
+        raise ValueError("window geometry is only valid when state is normal")
+
+    params = {"clientWindow": client_window, "state": state}
     if width is not None:
         params["width"] = width
     if height is not None:
@@ -106,7 +124,7 @@ def set_client_window_state(
 def set_download_behavior(
     driver, behavior="allow", download_path=None, contexts=None, user_contexts=None
 ):
-    """设置下载行为（Firefox 私有扩展，非 W3C 标准）。
+    """设置下载行为。
 
     Args:
         behavior: 下载策略字符串。
@@ -116,8 +134,8 @@ def set_download_behavior(
             单位：文件系统路径字符串。
             常见值：绝对路径，例如 ``'E:/ruyipage/examples/downloads'``。
             当 ``behavior='allow'`` 时通常配合使用。
-        contexts: 受影响的 browsingContext ID 列表。
-            常见值：``[page.tab_id]``。与 ``user_contexts`` 互斥。
+        contexts: 旧参数。当前 ``browser.setDownloadBehavior`` 不支持按
+            browsingContext 设置下载目录，请省略或改用 ``user_contexts``。
         user_contexts: 受影响的 user context ID 列表。
             常见值：Firefox 容器标签页 ID 列表。与 ``contexts`` 互斥。
 
@@ -126,23 +144,35 @@ def set_download_behavior(
 
     适用场景：
         - 示例中切换 allow / deny 下载策略
-        - 针对特定 tab 或 user context 施加下载策略
+        - 针对默认浏览器行为或特定 user context 施加下载策略
     """
-    if contexts is not None and user_contexts is not None:
-        raise ValueError("contexts 与 user_contexts 不能同时设置")
+    if contexts is not None:
+        raise ValueError(
+            "browser.setDownloadBehavior 不支持 contexts，请省略或使用 user_contexts"
+        )
 
     params = {}
 
-    # 构建downloadBehavior对象
-    # type字段必须是 'allowed' 或 'denied'
-    behavior_type = "allowed" if behavior in ["allow", "allowAndOpen"] else "denied"
-    download_behavior = {"type": behavior_type, "behavior": behavior}
-    if download_path:
-        download_behavior["downloadPath"] = download_path
+    behavior_text = None if behavior is None else str(behavior).strip()
+    if behavior_text is None:
+        download_behavior = None
+    elif behavior_text in ("allow", "allowAndOpen", "allowed"):
+        if not download_path:
+            raise ValueError("download_path is required when behavior is allow")
+        download_behavior = {"type": "allowed"}
+        if download_path:
+            destination_folder = os.path.normpath(
+                os.path.abspath(os.path.expanduser(os.fspath(download_path)))
+            )
+            os.makedirs(destination_folder, exist_ok=True)
+            download_behavior["destinationFolder"] = destination_folder
+    elif behavior_text in ("deny", "denied"):
+        download_behavior = {"type": "denied"}
+    else:
+        raise ValueError("behavior 必须是 'allow'、'allowAndOpen' 或 'deny'")
+
     params["downloadBehavior"] = download_behavior
 
-    if contexts:
-        params["contexts"] = contexts if isinstance(contexts, list) else [contexts]
     if user_contexts:
         params["userContexts"] = (
             user_contexts if isinstance(user_contexts, list) else [user_contexts]

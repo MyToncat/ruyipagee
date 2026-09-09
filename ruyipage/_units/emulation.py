@@ -1,11 +1,61 @@
 # -*- coding: utf-8 -*-
 """EmulationManager - 设备模拟管理器"""
 
+from dataclasses import dataclass
+from typing import Optional
+
 from .._bidi import emulation as bidi_emulation
 from .._bidi import browsing_context as bidi_context
+from ..errors import RuyiPageError
 import logging
 
 logger = logging.getLogger("ruyipage")
+JS_MAX_SAFE_INTEGER = (2**53) - 1
+_UNSET = object()
+
+
+class TouchUnsupportedError(RuyiPageError):
+    pass
+
+
+class TouchStartupOnlyError(RuyiPageError):
+    pass
+
+
+def _validate_max_touch_points(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(
+            "max_touch_points must be an integer in range 1..{}".format(
+                JS_MAX_SAFE_INTEGER
+            )
+        )
+    if value < 1 or value > JS_MAX_SAFE_INTEGER:
+        raise ValueError(
+            "max_touch_points must be in range 1..{}".format(JS_MAX_SAFE_INTEGER)
+        )
+    return value
+
+
+@dataclass(frozen=True)
+class TouchCapability(object):
+    native_supported: Optional[bool] = None
+    fallback_configured: bool = False
+    fallback_installable: bool = False
+    user_context: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class TouchOverrideResult(object):
+    enabled: bool
+    max_touch_points: Optional[int]
+    supported: bool
+    applied: bool
+    native_supported: bool
+    fallback_used: bool
+    source: str
+    runtime_mutable: bool
+    reason: Optional[str]
+    capability: TouchCapability
 
 
 class EmulationManager(object):
@@ -25,6 +75,20 @@ class EmulationManager(object):
     def _ctx(self):
         return [self._owner._context_id]
 
+    def _user_context(self):
+        try:
+            result = bidi_context.get_tree(
+                self._owner._driver._browser_driver,
+                max_depth=0,
+                root=self._owner._context_id,
+            )
+            contexts = result.get("contexts", [])
+            if contexts:
+                return contexts[0].get("userContext")
+        except Exception as e:
+            logger.debug("get current user context failed: %s", e)
+        return None
+
     def _supported(self, result):
         """判断底层命令是否被当前浏览器实现支持。
 
@@ -41,13 +105,170 @@ class EmulationManager(object):
         """
         return result is not None
 
-    def set_geolocation(self, latitude, longitude, accuracy=100):
+    def _options(self):
+        browser = getattr(self._owner, "browser", None)
+        return getattr(browser, "options", None)
+
+    def _touch_scope_kwargs(self, scope):
+        if scope == "global":
+            return {}, None
+        if scope == "context":
+            return {"contexts": self._ctx()}, None
+        if scope == "user_context":
+            user_context = self._user_context()
+            if user_context:
+                return {"user_contexts": [user_context]}, user_context
+            return None, None
+        raise ValueError("scope must be 'context', 'user_context', or 'global'")
+
+    def get_touch_capability(self, native_supported=None, user_context=_UNSET):
+        options = self._options()
+        fallback_configured = bool(
+            options and getattr(options, "touch_fallback_enabled", False)
+        )
+        fallback_installable = bool(
+            options
+            and hasattr(options, "can_install_touch_fallback")
+            and options.can_install_touch_fallback()
+        )
+        return TouchCapability(
+            native_supported=native_supported,
+            fallback_configured=fallback_configured,
+            fallback_installable=fallback_installable,
+            user_context=self._user_context() if user_context is _UNSET else user_context,
+        )
+
+    def _touch_startup_fallback_status(self, enabled, max_touch_points):
+        options = self._options()
+        if not options or not getattr(options, "touch_fallback_active", False):
+            return "none", False, None
+
+        configured_points = getattr(options, "touch_fallback_max_touch_points", None)
+        if not enabled:
+            return (
+                "fpfile",
+                False,
+                "startup touch fallback is active and cannot be disabled at runtime",
+            )
+        if configured_points != max_touch_points:
+            return (
+                "fpfile",
+                False,
+                "startup touch fallback max_touch_points={} does not match request {}".format(
+                    configured_points,
+                    max_touch_points,
+                ),
+            )
+        return "fpfile", True, None
+
+    def _resolve_capability_user_context(self, scope, scoped_user_context):
+        if scope == "user_context":
+            return scoped_user_context
+        return self._user_context()
+
+    def set_touch_enabled_result(
+        self, enabled=True, max_touch_points=1, scope="context", strict=False
+    ):
+        requested_max_touch_points = _validate_max_touch_points(max_touch_points)
+        scope_kwargs, user_context = self._touch_scope_kwargs(scope)
+        if scope == "user_context" and not user_context:
+            reason = "current browsing context has no userContext"
+            if strict:
+                raise TouchUnsupportedError(reason)
+            capability = self.get_touch_capability(
+                native_supported=None,
+                user_context=None,
+            )
+            return TouchOverrideResult(
+                enabled=enabled,
+                max_touch_points=requested_max_touch_points,
+                supported=False,
+                applied=False,
+                native_supported=False,
+                fallback_used=False,
+                source="none",
+                runtime_mutable=False,
+                reason=reason,
+                capability=capability,
+            )
+        result = bidi_emulation.set_touch_override(
+            self._owner._driver._browser_driver,
+            max_touch_points=requested_max_touch_points if enabled else None,
+            **scope_kwargs,
+        )
+        if result is not None:
+            capability_user_context = self._resolve_capability_user_context(
+                scope,
+                user_context,
+            )
+            capability = self.get_touch_capability(
+                native_supported=True,
+                user_context=capability_user_context,
+            )
+            return TouchOverrideResult(
+                enabled=enabled,
+                max_touch_points=requested_max_touch_points,
+                supported=True,
+                applied=True,
+                native_supported=True,
+                fallback_used=False,
+                source="native",
+                runtime_mutable=True,
+                reason=None,
+                capability=capability,
+            )
+
+        capability = self.get_touch_capability(
+            native_supported=False,
+            user_context=self._resolve_capability_user_context(scope, user_context),
+        )
+        source, applied, reason = self._touch_startup_fallback_status(
+            enabled,
+            requested_max_touch_points,
+        )
+        supported = source == "fpfile"
+        fallback_used = applied and source == "fpfile"
+        if strict:
+            if source == "none":
+                raise TouchUnsupportedError(
+                    "emulation.setTouchOverride is unsupported and no startup fallback is active"
+                )
+            if not applied:
+                raise TouchStartupOnlyError(reason)
+        return TouchOverrideResult(
+            enabled=enabled,
+            max_touch_points=requested_max_touch_points,
+            supported=supported,
+            applied=applied,
+            native_supported=False,
+            fallback_used=fallback_used,
+            source=source,
+            runtime_mutable=False,
+            reason=reason,
+            capability=capability,
+        )
+
+    def set_geolocation(
+        self,
+        latitude,
+        longitude,
+        accuracy=100,
+        *,
+        altitude=None,
+        altitude_accuracy=None,
+        heading=None,
+        speed=None,
+    ):
         """设置地理位置 (FF139+)。
 
         Args:
             latitude: 纬度
             longitude: 经度
             accuracy: 精度（米），常见值 50~100
+            altitude: 海拔（米），可选
+            altitude_accuracy: 海拔精度（米），可选
+            heading: 航向角 [0, 360)，可选
+            speed: 速度（米/秒），可选
 
         Returns:
             owner
@@ -58,6 +279,10 @@ class EmulationManager(object):
             longitude=longitude,
             accuracy=accuracy,
             contexts=self._ctx(),
+            altitude=altitude,
+            altitude_accuracy=altitude_accuracy,
+            heading=heading,
+            speed=speed,
         )
         return self._owner
 
@@ -92,12 +317,12 @@ class EmulationManager(object):
         )
         return self._owner
 
-    def set_screen_orientation(self, orientation_type, angle=0):
+    def set_screen_orientation(self, orientation_type, angle=None):
         """设置屏幕方向 (FF144+)
 
         Args:
             orientation_type: 'portrait-primary'/'landscape-primary' 等
-            angle: 0/90/180/270
+            angle: 可选的 0/90/180/270，用于推断并校验 natural orientation。
         """
         bidi_emulation.set_screen_orientation_override(
             self._owner._driver._browser_driver,
@@ -115,13 +340,37 @@ class EmulationManager(object):
             height: 屏幕高度（CSS 像素）
             device_pixel_ratio: 设备像素比，例如 2.0 / 3.0
         """
-        bidi_emulation.set_screen_settings_override(
+        user_context = self._user_context()
+        scope = (
+            {"user_contexts": [user_context]}
+            if user_context
+            else {"contexts": self._ctx()}
+        )
+        result = bidi_emulation.set_screen_settings_override(
             self._owner._driver._browser_driver,
             width=width,
             height=height,
-            device_pixel_ratio=device_pixel_ratio,
-            contexts=self._ctx(),
+            **scope,
         )
+        if device_pixel_ratio is not None:
+            viewport_scope = (
+                {"user_contexts": [user_context]}
+                if user_context
+                else {"context": self._owner._context_id}
+            )
+            bidi_context.set_viewport(
+                self._owner._driver._browser_driver,
+                device_pixel_ratio=device_pixel_ratio,
+                **viewport_scope,
+            )
+        if result is None:
+            bidi_emulation.inject_screen_settings_override(
+                self._owner._driver._browser_driver,
+                self._owner._context_id,
+                width,
+                height,
+                device_pixel_ratio=device_pixel_ratio,
+            )
         return self._owner
 
     def set_user_agent(self, user_agent, platform=None):
@@ -129,7 +378,8 @@ class EmulationManager(object):
 
         Args:
             user_agent: UA 字符串
-            platform: 可选平台名，例如 'iPhone'
+            platform: 已废弃的兼容参数；当前 W3C 命令不包含该字段，
+                传入非 ``None`` 值会抛出 ``ValueError``。
         """
         result = bidi_emulation.set_user_agent_override(
             self._owner._driver._browser_driver,
@@ -169,26 +419,11 @@ class EmulationManager(object):
         Returns:
             bool: 当前浏览器是否支持该命令
         """
-        value = max_touch_points if enabled else None
-        if scope == "global":
-            result = bidi_emulation.set_touch_override(
-                self._owner._driver._browser_driver,
-                max_touch_points=value,
-            )
-        elif scope == "user_context":
-            user_context = getattr(self._owner.browser.options, "user_context", None)
-            result = bidi_emulation.set_touch_override(
-                self._owner._driver._browser_driver,
-                max_touch_points=value,
-                user_contexts=user_context if user_context else None,
-            )
-        else:
-            result = bidi_emulation.set_touch_override(
-                self._owner._driver._browser_driver,
-                max_touch_points=value,
-                contexts=self._ctx(),
-            )
-        return self._supported(result)
+        return self.set_touch_enabled_result(
+            enabled=enabled,
+            max_touch_points=max_touch_points,
+            scope=scope,
+        ).applied
 
     def set_javascript_enabled(self, enabled=True):
         """启用/禁用 JavaScript。
@@ -216,7 +451,8 @@ class EmulationManager(object):
 
         Args:
             scrollbar_type: 目标滚动条类型。
-                常见值：``'none'``、``'standard'``、``'overlay'``。
+                常见值：``'classic'``、``'overlay'``；``None`` 或
+                ``'default'`` 用于清除覆盖。
 
         Returns:
             bool: ``True`` 表示当前浏览器支持该标准命令，``False`` 表示未实现。
@@ -237,7 +473,7 @@ class EmulationManager(object):
 
         Args:
             mode: 目标模式。
-                常见值：``'none'``、``'active'``、``'light'``、``'dark'``。
+                常见值：``'none'``、``'light'``、``'dark'``。
 
         Returns:
             bool: ``True`` 表示当前浏览器支持该标准命令，``False`` 表示未实现。
@@ -250,6 +486,41 @@ class EmulationManager(object):
             self._owner._driver._browser_driver,
             mode=mode,
             contexts=self._ctx(),
+        )
+        return self._supported(result)
+
+    def set_media_features(self, features, scope="context"):
+        """覆盖 CSS 媒体特征。
+
+        Args:
+            features: W3C ``MediaFeatures`` 字典；传 ``None`` 清除覆盖。
+            scope: ``'context'``、``'user_context'`` 或 ``'global'``。
+
+        Returns:
+            bool: 当前 Firefox 是否实现并应用了该标准命令。
+        """
+        scope_kwargs, _ = self._touch_scope_kwargs(scope)
+        if scope_kwargs is None:
+            return False
+        result = bidi_emulation.set_media_features_override(
+            self._owner._driver._browser_driver,
+            features=features,
+            **scope_kwargs,
+        )
+        return self._supported(result)
+
+    def set_viewport_meta(self, enabled=True, scope="context"):
+        """设置是否忽略页面的 ``<meta name=viewport>``。
+
+        W3C 参数只接受 ``true`` 或 ``null``；因此 ``False`` 会清除覆盖。
+        """
+        scope_kwargs, _ = self._touch_scope_kwargs(scope)
+        if scope_kwargs is None:
+            return False
+        result = bidi_emulation.set_viewport_meta_override(
+            self._owner._driver._browser_driver,
+            viewport_meta=True if enabled else None,
+            **scope_kwargs,
         )
         return self._supported(result)
 
@@ -270,7 +541,7 @@ class EmulationManager(object):
         height=844,
         device_pixel_ratio=3.0,
         orientation_type="portrait-primary",
-        angle=0,
+        angle=None,
         locale=None,
         timezone_id=None,
         touch=True,

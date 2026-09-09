@@ -13,15 +13,15 @@ Firefox Remote Agent 通过 --remote-debugging-port 暴露两个端点：
 """
 
 import json
-import socket
 import subprocess
 import time
 import logging
+from urllib.parse import urlsplit
 
 logger = logging.getLogger("ruyipage")
 
 
-def _probe_ws_url(ws_url, timeout=3):
+def _probe_ws_url(ws_url, timeout=0.5):
     """尝试建立一次 WebSocket 握手，确认给定 BiDi URL 可用。"""
     import websocket
 
@@ -41,28 +41,48 @@ def _probe_ws_url(ws_url, timeout=3):
                 pass
 
 
-def find_free_port(start=9222, end=9322):
-    """在 [start, end) 范围内找一个空闲端口"""
-    for port in range(start, end):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
+from .._functions.tools import find_free_port, is_port_open  # noqa: F401
+
+
+def _is_bidi_ws_url(ws_url):
+    if not ws_url:
+        return False
+    try:
+        path = urlsplit(ws_url).path.lower()
+    except Exception:
+        return False
+    return "/devtools/" not in path
+
+
+def _remaining_timeout(deadline, cap):
+    remaining = deadline - time.time()
+    if remaining <= 0:
+        return 0
+    return max(0.01, min(cap, remaining))
+
+
+def _read_json_ws_url(url, request_timeout):
+    import urllib.request
+    import urllib.error
+
+    try:
+        with urllib.request.urlopen(url, timeout=request_timeout) as resp:
+            data = json.loads(resp.read().decode())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return ""
+
+    if isinstance(data, dict):
+        ws = data.get("webSocketDebuggerUrl", "")
+        return ws if _is_bidi_ws_url(ws) else ""
+
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
                 continue
-    raise RuntimeError("找不到空闲端口 [{}, {})".format(start, end))
-
-
-def is_port_open(host, port, timeout=1.0):
-    """检测端口是否可连接"""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(timeout)
-        try:
-            s.connect((host, port))
-            return True
-        except (ConnectionRefusedError, socket.timeout, OSError):
-            return False
+            ws = item.get("webSocketDebuggerUrl", "")
+            if _is_bidi_ws_url(ws):
+                return ws
+    return ""
 
 
 def get_bidi_ws_url(host, port, timeout=30):
@@ -79,41 +99,39 @@ def get_bidi_ws_url(host, port, timeout=30):
     Returns:
         str: WebSocket URL，如 'ws://127.0.0.1:9222/session'
     """
-    import urllib.request
-    import urllib.error
-
     direct_ws = "ws://{}:{}".format(host, port)
     session_ws = "ws://{}:{}/session".format(host, port)
 
-    # 先优先探测直连根路径。AdsPower / FlowerBrowser 暴露的 Firefox BiDi
-    # 常见为 ws://host:port，而不是标准 Firefox Remote Agent 的 /session。
-    if _probe_ws_url(direct_ws, timeout=3):
-        return direct_ws
-
     deadline = time.time() + timeout
     url = "http://{}:{}/json".format(host, port)
+    request_cap = 0.5 if host in ("127.0.0.1", "localhost", "::1") else 1.0
+    root_probe_done = False
 
     while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(url, timeout=3) as resp:
-                data = json.loads(resp.read().decode())
-                # Firefox 返回顶层对象，含 webSocketDebuggerUrl
-                if isinstance(data, dict):
-                    ws = data.get("webSocketDebuggerUrl", "")
-                    if ws:
-                        return ws
-                # 某些版本返回列表（CDP 兼容格式）
-                if isinstance(data, list) and data:
-                    ws = data[0].get("webSocketDebuggerUrl", "")
-                    if ws:
-                        return ws
-        except (urllib.error.URLError, OSError, json.JSONDecodeError):
-            pass
-        time.sleep(0.5)
+        request_timeout = _remaining_timeout(deadline, request_cap)
+        if request_timeout <= 0:
+            break
+        ws = _read_json_ws_url(url, request_timeout)
+        if ws:
+            return ws
 
-    # 降级：优先返回仍可握手的地址。
-    if _probe_ws_url(session_ws, timeout=3):
+        # AdsPower / FlowerBrowser may expose BiDi at ws://host:port.
+        if not root_probe_done:
+            root_probe_done = True
+            if _probe_ws_url(direct_ws, timeout=_remaining_timeout(deadline, 0.3)):
+                return direct_ws
+            if _probe_ws_url(session_ws, timeout=_remaining_timeout(deadline, 0.3)):
+                return session_ws
+
+        time.sleep(min(0.1, max(0, deadline - time.time())))
+
+    if _probe_ws_url(session_ws, timeout=_remaining_timeout(deadline, 0.3)):
         return session_ws
+
+    if not root_probe_done and _probe_ws_url(
+        direct_ws, timeout=_remaining_timeout(deadline, 0.3)
+    ):
+        return direct_ws
 
     return direct_ws
 
@@ -156,9 +174,20 @@ def launch_firefox(cmd, env=None):
     if env:
         kwargs["env"] = env
 
-    # Windows 下隐藏控制台窗口
+    # Windows: 隐藏控制台窗口 + 脱离 Job Object（避免调试器停止时连带杀死浏览器）
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
+    else:
+        # Unix/macOS: 脱离进程组
+        kwargs["start_new_session"] = True
 
     logger.debug("启动 Firefox: %s", " ".join(cmd))
-    return subprocess.Popen(cmd, **kwargs)
+    try:
+        return subprocess.Popen(cmd, **kwargs)
+    except OSError:
+        # 某些受限环境不允许 BREAKAWAY_FROM_JOB，回退
+        if "creationflags" in kwargs:
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            return subprocess.Popen(cmd, **kwargs)
+        raise

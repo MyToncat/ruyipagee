@@ -16,6 +16,11 @@ import math
 import time
 
 from .._functions.keys import Keys
+from .._functions.sleep import sleep as _sleep
+
+import logging
+
+logger = logging.getLogger('ruyipage')
 
 
 class Actions(object):
@@ -55,8 +60,31 @@ class Actions(object):
         self._pointer_actions = []  # pointer (mouse) 动作序列
         self._key_actions = []  # keyboard 动作序列
         self._wheel_actions = []  # wheel (滚轮) 动作序列
+        self._action_stages = []
         self.curr_x = 0  # 当前鼠标 X 坐标 (视口像素)
         self.curr_y = 0  # 当前鼠标 Y 坐标 (视口像素)
+        self._pointer_position_known = False
+
+    def _append_action(self, source, action):
+        """Append an action while preserving chain-call ordering by source stage."""
+        if source == "pointer":
+            self._pointer_actions.append(action)
+        elif source == "key":
+            self._key_actions.append(action)
+        elif source == "wheel":
+            self._wheel_actions.append(action)
+        else:
+            raise ValueError("unsupported action source: {}".format(source))
+
+        if self._action_stages and self._action_stages[-1].get("source") == source:
+            self._action_stages[-1]["actions"].append(action)
+        else:
+            self._action_stages.append({"source": source, "actions": [action]})
+
+    def _append_wait_stage(self, duration):
+        self._pointer_actions.append({"type": "pause", "duration": duration})
+        self._key_actions.append({"type": "pause", "duration": duration})
+        self._action_stages.append({"source": "wait", "duration": duration})
 
     # ════════════════════════════════════════════════════════════════
     #  鼠标/指针操作
@@ -77,7 +105,8 @@ class Actions(object):
                         - FirefoxElement: 移动到元素中心
                         - dict {'x': int, 'y': int}: 移动到指定坐标
                         - tuple/list (x, y): 移动到指定坐标
-                        - None: 使用当前鼠标位置
+                        - None: 仅传 offset 时按视口绝对坐标 (offset_x, offset_y)；
+                                offset 也为 0 时保持当前鼠标位置不动。
             offset_x:   在目标位置基础上的 X 偏移量 (像素)。默认 0。
             offset_y:   在目标位置基础上的 Y 偏移量 (像素)。默认 0。
             duration:   移动动画时长 (毫秒)。默认 100。
@@ -87,15 +116,21 @@ class Actions(object):
         Returns:
             self: 支持链式调用。
         """
-        x, y = self._resolve_position(ele_or_loc)
+        # 不传 ele_or_loc 但显式给了 offset 时，按视口绝对坐标处理，
+        # 避免 "offset 累加到上一次指针位置" 造成的越界 / 错位 bug。
+        if ele_or_loc is None and (offset_x or offset_y):
+            x, y = 0, 0
+        else:
+            x, y = self._resolve_position(ele_or_loc)
         x += offset_x
         y += offset_y
         action = {"type": "pointerMove", "x": int(x), "y": int(y), "duration": duration}
         if origin != "viewport":
             action["origin"] = origin
-        self._pointer_actions.append(action)
+        self._append_action("pointer", action)
         self.curr_x = x
         self.curr_y = y
+        self._pointer_position_known = True
         return self
 
     def move(self, offset_x=0, offset_y=0, duration=100):
@@ -111,7 +146,8 @@ class Actions(object):
         """
         self.curr_x += offset_x
         self.curr_y += offset_y
-        self._pointer_actions.append(
+        self._append_action(
+            "pointer",
             {
                 "type": "pointerMove",
                 "x": int(self.curr_x),
@@ -119,6 +155,7 @@ class Actions(object):
                 "duration": duration,
             }
         )
+        self._pointer_position_known = True
         return self
 
     def click(self, on_ele=None, times=1):
@@ -136,9 +173,9 @@ class Actions(object):
             self.move_to(on_ele)
 
         for _ in range(times):
-            self._pointer_actions.append({"type": "pointerDown", "button": 0})
-            self._pointer_actions.append({"type": "pause", "duration": 50})
-            self._pointer_actions.append({"type": "pointerUp", "button": 0})
+            self._append_action("pointer", {"type": "pointerDown", "button": 0})
+            self._append_action("pointer", {"type": "pause", "duration": 50})
+            self._append_action("pointer", {"type": "pointerUp", "button": 0})
 
         return self
 
@@ -165,9 +202,9 @@ class Actions(object):
         if on_ele:
             self.move_to(on_ele)
 
-        self._pointer_actions.append({"type": "pointerDown", "button": 2})
-        self._pointer_actions.append({"type": "pause", "duration": 50})
-        self._pointer_actions.append({"type": "pointerUp", "button": 2})
+        self._append_action("pointer", {"type": "pointerDown", "button": 2})
+        self._append_action("pointer", {"type": "pause", "duration": 50})
+        self._append_action("pointer", {"type": "pointerUp", "button": 2})
         return self
 
     def middle_click(self, on_ele=None):
@@ -182,9 +219,9 @@ class Actions(object):
         if on_ele:
             self.move_to(on_ele)
 
-        self._pointer_actions.append({"type": "pointerDown", "button": 1})
-        self._pointer_actions.append({"type": "pause", "duration": 50})
-        self._pointer_actions.append({"type": "pointerUp", "button": 1})
+        self._append_action("pointer", {"type": "pointerDown", "button": 1})
+        self._append_action("pointer", {"type": "pause", "duration": 50})
+        self._append_action("pointer", {"type": "pointerUp", "button": 1})
         return self
 
     # 保留旧名称为别名，但标记为已弃用，内部统一调用新方法
@@ -222,7 +259,7 @@ class Actions(object):
         """
         if on_ele:
             self.move_to(on_ele)
-        self._pointer_actions.append({"type": "pointerDown", "button": button})
+        self._append_action("pointer", {"type": "pointerDown", "button": button})
         return self
 
     def release(self, on_ele=None, button=0):
@@ -237,7 +274,7 @@ class Actions(object):
         """
         if on_ele:
             self.move_to(on_ele)
-        self._pointer_actions.append({"type": "pointerUp", "button": button})
+        self._append_action("pointer", {"type": "pointerUp", "button": button})
         return self
 
     def drag_to(self, source, target, duration=500, steps=20):
@@ -259,7 +296,8 @@ class Actions(object):
         ex, ey = self._resolve_position(target)
         step_dur = max(1, duration // steps)
 
-        self._pointer_actions.append(
+        self._append_action(
+            "pointer",
             {
                 "type": "pointerMove",
                 "origin": "viewport",
@@ -268,13 +306,14 @@ class Actions(object):
                 "duration": 0,
             }
         )
-        self._pointer_actions.append({"type": "pointerDown", "button": 0})
-        self._pointer_actions.append({"type": "pause", "duration": 120})
+        self._append_action("pointer", {"type": "pointerDown", "button": 0})
+        self._append_action("pointer", {"type": "pause", "duration": 120})
 
         for i in range(1, steps + 1):
             px = int(sx + (ex - sx) * i / steps)
             py = int(sy + (ey - sy) * i / steps)
-            self._pointer_actions.append(
+            self._append_action(
+                "pointer",
                 {
                     "type": "pointerMove",
                     "origin": "viewport",
@@ -284,11 +323,12 @@ class Actions(object):
                 }
             )
 
-        self._pointer_actions.append({"type": "pause", "duration": 120})
-        self._pointer_actions.append({"type": "pointerUp", "button": 0})
+        self._append_action("pointer", {"type": "pause", "duration": 120})
+        self._append_action("pointer", {"type": "pointerUp", "button": 0})
 
         self.curr_x = int(ex)
         self.curr_y = int(ey)
+        self._pointer_position_known = True
         return self
 
     def drag(self, source, target, duration=500, steps=20):
@@ -309,7 +349,7 @@ class Actions(object):
         Returns:
             self: 支持链式调用。
         """
-        self._key_actions.append({"type": "keyDown", "value": key})
+        self._append_action("key", {"type": "keyDown", "value": key})
         return self
 
     def key_up(self, key):
@@ -321,7 +361,7 @@ class Actions(object):
         Returns:
             self: 支持链式调用。
         """
-        self._key_actions.append({"type": "keyUp", "value": key})
+        self._append_action("key", {"type": "keyUp", "value": key})
         return self
 
     def combo(self, *keys):
@@ -340,9 +380,9 @@ class Actions(object):
             self: 支持链式调用。
         """
         for k in keys:
-            self._key_actions.append({"type": "keyDown", "value": k})
+            self._append_action("key", {"type": "keyDown", "value": k})
         for k in reversed(keys):
-            self._key_actions.append({"type": "keyUp", "value": k})
+            self._append_action("key", {"type": "keyUp", "value": k})
         return self
 
     def type(self, text, interval=0):
@@ -358,10 +398,10 @@ class Actions(object):
             self: 支持链式调用。
         """
         for char in str(text):
-            self._key_actions.append({"type": "keyDown", "value": char})
+            self._append_action("key", {"type": "keyDown", "value": char})
             if interval:
-                self._key_actions.append({"type": "pause", "duration": interval})
-            self._key_actions.append({"type": "keyUp", "value": char})
+                self._append_action("key", {"type": "pause", "duration": interval})
+            self._append_action("key", {"type": "keyUp", "value": char})
         return self
 
     def press(self, key):
@@ -376,8 +416,8 @@ class Actions(object):
         Returns:
             self: 支持链式调用。
         """
-        self._key_actions.append({"type": "keyDown", "value": key})
-        self._key_actions.append({"type": "keyUp", "value": key})
+        self._append_action("key", {"type": "keyDown", "value": key})
+        self._append_action("key", {"type": "keyUp", "value": key})
         return self
 
     # ════════════════════════════════════════════════════════════════
@@ -413,7 +453,7 @@ class Actions(object):
         }
         if origin != "viewport":
             action["origin"] = origin
-        self._wheel_actions.append(action)
+        self._append_action("wheel", action)
         return self
 
     # ════════════════════════════════════════════════════════════════
@@ -432,8 +472,7 @@ class Actions(object):
             self: 支持链式调用。
         """
         ms = int(seconds * 1000)
-        self._pointer_actions.append({"type": "pause", "duration": ms})
-        self._key_actions.append({"type": "pause", "duration": ms})
+        self._append_wait_stage(ms)
         return self
 
     # ════════════════════════════════════════════════════════════════
@@ -443,54 +482,131 @@ class Actions(object):
     def perform(self):
         """执行积累的所有动作。
 
-        将 pointer、key、wheel 三个通道的动作序列
-        通过 BiDi input.performActions 命令一次性发送给浏览器。
+        按链式调用顺序将 pointer、key、wheel 动作分阶段发送给浏览器。
+        不同 input source 在同一次 performActions 中会并行执行，因此跨 source
+        的阶段会拆成多次 input.performActions 调用。
         执行后自动清空动作队列。
 
         Returns:
             self: 支持链式调用。
         """
-        actions = []
-
         # 保存副本供可视化使用
         pointer_copy = self._pointer_actions[:]
         key_copy = self._key_actions[:]
+        stages = [
+            {"source": stage.get("source"), "actions": stage.get("actions", [])[:], "duration": stage.get("duration")}
+            for stage in self._action_stages
+        ]
+        stages = self._coalesce_pointer_drag_stages(stages)
 
-        if self._pointer_actions:
-            actions.append(
-                {
-                    "type": "pointer",
-                    "id": "mouse0",
-                    "parameters": {"pointerType": "mouse"},
-                    "actions": self._pointer_actions[:],
-                }
-            )
-
-        if self._key_actions:
-            actions.append(
-                {"type": "key", "id": "keyboard0", "actions": self._key_actions[:]}
-            )
-
-        if self._wheel_actions:
-            actions.append(
-                {"type": "wheel", "id": "wheel0", "actions": self._wheel_actions[:]}
-            )
-
-        if actions:
-            self._owner._driver._browser_driver.run(
-                "input.performActions",
-                {"context": self._owner._context_id, "actions": actions},
-            )
-
-        # 清空动作队列
-        self._pointer_actions.clear()
-        self._key_actions.clear()
-        self._wheel_actions.clear()
+        try:
+            for stage in stages:
+                actions = self._build_perform_actions(stage)
+                if not actions:
+                    continue
+                self._owner._driver._browser_driver.run(
+                    "input.performActions",
+                    {"context": self._owner._context_id, "actions": actions},
+                )
+        finally:
+            # 无论成功或失败都清空队列，避免残留动作污染下一次 perform()
+            self._pointer_actions.clear()
+            self._key_actions.clear()
+            self._wheel_actions.clear()
+            self._action_stages.clear()
 
         # 可视化渲染（执行后注入）
         self._send_visual_data(pointer_copy, key_copy)
 
         return self
+
+    def _coalesce_pointer_drag_stages(self, stages):
+        """Keep pointerDown -> pointerUp drag gestures in one BiDi command.
+
+        Splitting a drag across multiple input.performActions calls can make
+        complex pages observe pointer movement without the pressed-button drag
+        state. Plain clicks and cross-source click/type chains stay staged.
+        """
+        result = []
+        drag_stage = None
+        pressed_buttons = set()
+
+        def update_pressed(actions):
+            for action in actions:
+                action_type = action.get("type")
+                if action_type == "pointerDown":
+                    pressed_buttons.add(action.get("button", 0))
+                elif action_type == "pointerUp":
+                    pressed_buttons.discard(action.get("button", 0))
+
+        for stage in stages:
+            source = stage.get("source")
+
+            if source == "pointer":
+                actions = stage.get("actions", [])
+                if drag_stage is not None:
+                    drag_stage["actions"].extend(actions)
+                    update_pressed(actions)
+                    if not pressed_buttons:
+                        result.append(drag_stage)
+                        drag_stage = None
+                    continue
+
+                update_pressed(actions)
+                if pressed_buttons:
+                    drag_stage = {"source": "pointer", "actions": actions[:]}
+                else:
+                    result.append(stage)
+                continue
+
+            if source == "wait" and drag_stage is not None and pressed_buttons:
+                drag_stage["actions"].append(
+                    {"type": "pause", "duration": stage.get("duration", 0)}
+                )
+                continue
+
+            if drag_stage is not None:
+                result.append(drag_stage)
+                drag_stage = None
+
+            result.append(stage)
+
+        if drag_stage is not None:
+            result.append(drag_stage)
+
+        return result
+
+    def _build_perform_actions(self, stage):
+        source = stage.get("source")
+        if source == "pointer":
+            return [
+                {
+                    "type": "pointer",
+                    "id": "mouse0",
+                    "parameters": {"pointerType": "mouse"},
+                    "actions": stage.get("actions", []),
+                }
+            ]
+        if source == "key":
+            return [{"type": "key", "id": "keyboard0", "actions": stage.get("actions", [])}]
+        if source == "wheel":
+            return [{"type": "wheel", "id": "wheel0", "actions": stage.get("actions", [])}]
+        if source == "wait":
+            duration = stage.get("duration", 0)
+            return [
+                {
+                    "type": "pointer",
+                    "id": "mouse0",
+                    "parameters": {"pointerType": "mouse"},
+                    "actions": [{"type": "pause", "duration": duration}],
+                },
+                {
+                    "type": "key",
+                    "id": "keyboard0",
+                    "actions": [{"type": "pause", "duration": duration}],
+                },
+            ]
+        return []
 
     def release_all(self):
         """释放所有按住的按键和鼠标按钮。
@@ -536,19 +652,28 @@ class Actions(object):
         Returns:
             self: 支持链式调用。
         """
-        target_x, target_y = self._resolve_position(ele_or_loc)
         start_x, start_y = self.curr_x, self.curr_y
+        is_element = hasattr(ele_or_loc, "states") and hasattr(ele_or_loc, "_get_center")
+
+        target_x, target_y = self._resolve_position(ele_or_loc, scroll=False)
 
         # 自动滚动到可见
-        if hasattr(ele_or_loc, "states") and hasattr(
-            ele_or_loc.states, "is_whole_in_viewport"
-        ):
+        if hasattr(ele_or_loc, "states") and hasattr(ele_or_loc.states, "is_whole_in_viewport"):
             if not ele_or_loc.states.is_whole_in_viewport:
                 try:
                     self._owner.scroll.to_see(ele_or_loc, center=True)
-                    time.sleep(random.uniform(0.1, 0.2))
-                except Exception:
-                    pass
+                    _sleep(random.uniform(0.1, 0.2))
+                    # 滚动后重新取一次元素中心，避免继续使用滚动前的旧视口坐标。
+                    if is_element:
+                        target_x, target_y = self._resolve_position(ele_or_loc, scroll=False)
+                except Exception as e:
+                    logger.debug("预滚动元素到视口失败: %s", e)
+
+        min_x, max_x, min_y, max_y = self._get_viewport_bounds()
+        if not self._pointer_position_known:
+            start_x, start_y = self._random_human_start(min_x, max_x, min_y, max_y)
+        start_x, start_y = self._clamp_point(start_x, start_y, min_x, max_x, min_y, max_y)
+        target_x, target_y = self._clamp_point(target_x, target_y, min_x, max_x, min_y, max_y)
 
         algorithm = self._resolve_human_algorithm(algorithm)
         path = self._build_human_move_path(
@@ -557,10 +682,14 @@ class Actions(object):
             algorithm=algorithm,
             style=style,
         )
+        if not path or int(path[0][0]) != int(start_x) or int(path[0][1]) != int(start_y):
+            path.insert(0, (start_x, start_y))
 
         # 执行移动
         for px, py in path:
-            self._pointer_actions.append(
+            px, py = self._clamp_point(px, py, min_x, max_x, min_y, max_y)
+            self._append_action(
+                "pointer",
                 {
                     "type": "pointerMove",
                     "x": int(px),
@@ -571,17 +700,28 @@ class Actions(object):
 
         # 悬停微调
         for _ in range(random.randint(2, 4)):
-            self._pointer_actions.append(
+            hover_x, hover_y = self._clamp_point(
+                target_x + random.randint(-2, 2),
+                target_y + random.randint(-1, 1),
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+            )
+            self._append_action(
+                "pointer",
                 {
                     "type": "pointerMove",
-                    "x": int(target_x + random.randint(-2, 2)),
-                    "y": int(target_y + random.randint(-1, 1)),
+                    "x": int(hover_x),
+                    "y": int(hover_y),
                     "duration": random.randint(20, 50),
                 }
             )
 
         # 精确落点
-        self._pointer_actions.append(
+        target_x, target_y = self._clamp_point(target_x, target_y, min_x, max_x, min_y, max_y)
+        self._append_action(
+            "pointer",
             {
                 "type": "pointerMove",
                 "x": int(target_x),
@@ -592,6 +732,7 @@ class Actions(object):
 
         self.curr_x = target_x
         self.curr_y = target_y
+        self._pointer_position_known = True
         return self
 
     def human_click(self, on_ele=None, button="left", algorithm=None, style=None):
@@ -621,11 +762,12 @@ class Actions(object):
         button_map = {"left": 0, "middle": 1, "right": 2}
         btn = button_map.get(button, 0)
 
-        self._pointer_actions.append({"type": "pointerDown", "button": btn})
-        self._pointer_actions.append(
+        self._append_action("pointer", {"type": "pointerDown", "button": btn})
+        self._append_action(
+            "pointer",
             {"type": "pause", "duration": random.randint(40, 90)}
         )
-        self._pointer_actions.append({"type": "pointerUp", "button": btn})
+        self._append_action("pointer", {"type": "pointerUp", "button": btn})
 
         return self
 
@@ -798,8 +940,18 @@ class Actions(object):
 
             prev_x = x
             prev_y = y
+            prev_dx = dx
+            prev_dy = dy
             x += velocity_x
             y += velocity_y
+
+            next_dx = ex - x
+            next_dy = ey - y
+            crossed_target = prev_dx * next_dx + prev_dy * next_dy <= 0
+            next_dist = math.hypot(next_dx, next_dy)
+            if crossed_target or next_dist <= 1.0:
+                path.append((float(ex), float(ey)))
+                break
 
             if int(prev_x) != int(x) or int(prev_y) != int(y):
                 path.append((x, y))
@@ -823,6 +975,37 @@ class Actions(object):
             raise ValueError('human algorithm 必须是 "bezier" 或 "windmouse"')
         return value
 
+    def _get_viewport_bounds(self):
+        """返回当前 context 的有效 viewport 边界。"""
+        width, height = self._owner.rect.viewport_size
+        width = max(1, int(width or 0))
+        height = max(1, int(height or 0))
+        return 0, width - 1, 0, height - 1
+
+    def _random_human_start(self, min_x, max_x, min_y, max_y):
+        """首次拟人移动时，在 viewport 内生成一个自然起点。"""
+        return (
+            self._random_axis_start(min_x, max_x),
+            self._random_axis_start(min_y, max_y),
+        )
+
+    @staticmethod
+    def _random_axis_start(min_value, max_value):
+        min_value = int(round(min_value))
+        max_value = int(round(max_value))
+        if max_value <= min_value:
+            return float(min_value)
+
+        span = max_value - min_value
+        margin = min(max(8, int(span * 0.08)), span // 2)
+        return float(random.randint(min_value + margin, max_value - margin))
+
+    def _clamp_point(self, x, y, min_x, max_x, min_y, max_y):
+        """将坐标限制在当前 viewport 内。"""
+        x = min(max(float(x), min_x), max_x)
+        y = min(max(float(y), min_y), max_y)
+        return x, y
+
     def human_type(self, text, min_delay=0.045, max_delay=0.24):
         """拟人化输入文本。
 
@@ -837,14 +1020,14 @@ class Actions(object):
             self: 支持链式调用。
         """
         for char in str(text):
-            self._key_actions.append({"type": "keyDown", "value": char})
+            self._append_action("key", {"type": "keyDown", "value": char})
 
             # 随机击键间隔
             interval = int(random.uniform(min_delay, max_delay) * 1000)
             if interval > 0:
-                self._key_actions.append({"type": "pause", "duration": interval})
+                self._append_action("key", {"type": "pause", "duration": interval})
 
-            self._key_actions.append({"type": "keyUp", "value": char})
+            self._append_action("key", {"type": "keyUp", "value": char})
 
         return self
 
@@ -852,11 +1035,12 @@ class Actions(object):
     #  内部辅助方法
     # ════════════════════════════════════════════════════════════════
 
-    def _resolve_position(self, ele_or_loc):
+    def _resolve_position(self, ele_or_loc, scroll=True):
         """解析目标位置为 (x, y) 坐标。
 
         Args:
             ele_or_loc: 元素、坐标 dict、坐标 tuple/list、或 None。
+            scroll: 获取元素坐标时是否先滚动到可见区域。默认 True。
 
         Returns:
             tuple: (x, y) 坐标元组。
@@ -871,9 +1055,14 @@ class Actions(object):
             return ele_or_loc[0], ele_or_loc[1]
 
         # 假定是元素对象
-        pos = getattr(ele_or_loc, "_get_center", lambda: None)()
-        if pos:
-            return pos.get("x", 0), pos.get("y", 0)
+        get_center = getattr(ele_or_loc, "_get_center", None)
+        if get_center:
+            try:
+                pos = get_center(scroll=scroll)
+            except TypeError:
+                pos = get_center()
+            if pos:
+                return pos.get("x", 0), pos.get("y", 0)
 
         return self.curr_x, self.curr_y
 

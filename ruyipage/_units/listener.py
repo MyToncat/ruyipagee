@@ -27,9 +27,13 @@ import re
 import time
 import logging
 import threading
-from queue import Queue, Empty
+import base64
+from collections import deque
+from queue import Queue, Empty, Full
 
 from .._bidi import session as bidi_session
+from .._functions.queue_utils import queue_get as _queue_get
+from .._functions.settings import Settings
 
 logger = logging.getLogger('ruyipage')
 
@@ -46,7 +50,8 @@ class DataPacket(object):
         status (int): 响应状态码，如 ``200``、``404``。请求失败时为 ``0``。
         headers (dict): 响应头字典 ``{name: value}``，key 已转小写。
         event_type (str): 事件类型，``"responseCompleted"`` 或 ``"fetchError"``。
-        body: 响应体（当前版本始终为 ``None``，需通过 DataCollector 获取）。
+        body: 响应体文本缓存。可通过 ``packet.text`` 或
+            ``packet.response_body`` 便捷读取。
         request (dict): BiDi 原始 request 对象。
         response (dict): BiDi 原始 response 对象。
         timestamp (float): 事件时间戳。
@@ -63,7 +68,7 @@ class DataPacket(object):
 
     def __init__(self, request=None, response=None, event_type='',
                  url='', method='', status=0, headers=None, body=None,
-                 timestamp=0):
+                 timestamp=0, response_collector=None, owner=None):
         self.request = request or {}
         self.response = response or {}
         self.event_type = event_type
@@ -73,6 +78,97 @@ class DataPacket(object):
         self.headers = headers or {}
         self.body = body
         self.timestamp = timestamp
+        self._response_collector = response_collector
+        self._owner = owner
+
+    @property
+    def request_id(self):
+        """请求唯一 ID，用于关联 DataCollector 数据。"""
+        request_id = self.request.get('request')
+        return request_id if request_id else ''
+
+    def _decode_body_value(self, body):
+        if body is None:
+            return None
+        if isinstance(body, str):
+            return body
+        if not isinstance(body, dict):
+            return str(body)
+
+        body_type = body.get('type')
+        value = body.get('value')
+        if value is None:
+            return None
+        if body_type == 'string':
+            return str(value)
+        if body_type == 'base64':
+            try:
+                raw_bytes = base64.b64decode(value)
+            except Exception:
+                logger.debug('base64 解码失败，返回 None')
+                return None
+            # Firefox BiDi 返回的是已解压数据（浏览器 HTTP 层已处理
+            # Content-Encoding: br/gzip/deflate），这里只需文本解码。
+            try:
+                return raw_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                return raw_bytes.decode('utf-8', errors='replace')
+        return str(value)
+
+    def get_response_body(self):
+        """读取响应体文本。
+
+        ``page.listen.start()`` 默认会创建响应 DataCollector，因此滚动、点击
+        等操作触发的请求在 ``responseCompleted`` 后可直接通过本方法读取。
+
+        当 Firefox BiDi DataCollector 未能采集到数据时（已知 Firefox 147 对
+        ``Content-Encoding: br`` 响应存在此问题），会自动对 GET 请求使用页面
+        内 ``fetch()`` 重放读取作为降级方案。
+
+        对 204、跳转、失败请求、二进制资源或降级也失败的请求，返回 ``None``。
+        """
+        if self.body is not None:
+            return self.body
+
+        # 1. 优先从 DataCollector 读取
+        if self._response_collector and self.request_id:
+            try:
+                data = self._response_collector.get(self.request_id, data_type='response')
+                decoded = self._decode_body_value(getattr(data, 'base64', None))
+                if decoded is None:
+                    decoded = self._decode_body_value(getattr(data, 'bytes', None))
+                if decoded is not None:
+                    self.body = decoded
+                    return decoded
+            except Exception as e:
+                logger.debug('获取监听响应体失败: %s', e)
+
+        # 2. DataCollector 未采集到数据时，对 GET 请求用 JS fetch 降级
+        if self._owner and self.method == 'GET' and self.url:
+            try:
+                result = self._owner.run_js(
+                    'return fetch(arguments[0], {credentials: "include"})'
+                    '.then(r => r.text())',
+                    self.url,
+                    timeout=15,
+                )
+                if result and isinstance(result, str):
+                    self.body = result
+                    return result
+            except Exception as e:
+                logger.debug('JS fetch 降级读取失败: %s', e)
+
+        return None
+
+    @property
+    def response_body(self):
+        """响应体文本，等价于 ``get_response_body()``。"""
+        return self.get_response_body()
+
+    @property
+    def text(self):
+        """响应体文本别名，便于 ``packet.text`` 直接打印。"""
+        return self.get_response_body()
 
     @property
     def is_failed(self):
@@ -147,10 +243,14 @@ class Listener(object):
         self._targets = None  # True=全部, set=URL模式匹配
         self._is_regex = False
         self._method_filter = None
-        self._caught = Queue()
-        self._packets = []
+        # 事件由 driver 的事件线程写入，用户线程读取，两侧都要加锁；
+        # 两个缓冲区都设上限，避免长时间监听高流量站点时无限增长。
+        self._lock = threading.Lock()
+        self._caught = Queue(maxsize=Settings.listen_max_packets)
+        self._packets = deque(maxlen=Settings.listen_max_packets)
         self._subscription_id = None
         self._subscribed_events = []
+        self._response_collector = None
 
     @property
     def listening(self):
@@ -180,9 +280,10 @@ class Listener(object):
                 print(f"[{packet.status}] {packet.method} {packet.url}")
         """
         self._drain_queue()
-        return self._packets[:]
+        with self._lock:
+            return list(self._packets)
 
-    def start(self, targets=True, is_regex=False, method=None):
+    def start(self, targets=True, is_regex=False, method=None, collect_response=True):
         """开始监听网络事件。
 
         Args:
@@ -214,6 +315,12 @@ class Listener(object):
 
                     page.listen.start('/api/', method='POST')
 
+            collect_response: 是否自动采集响应体。默认 ``True``。
+
+                启用后，``page.listen.wait()`` 返回的 ``DataPacket`` 可直接通过
+                ``packet.text`` / ``packet.response_body`` 读取响应文本，无需手动
+                创建 ``page.network.add_data_collector(...)``。
+
         Examples::
 
             # 最简单：监听所有请求
@@ -241,12 +348,25 @@ class Listener(object):
         else:
             self._targets = True
 
-        self._caught = Queue()
-        self._packets = []
+        self._caught = Queue(maxsize=Settings.listen_max_packets)
+        with self._lock:
+            self._packets = deque(maxlen=Settings.listen_max_packets)
+        self._response_collector = None
 
-        # 订阅网络事件
+        if collect_response:
+            try:
+                self._response_collector = self._owner.network.add_data_collector(
+                    data_types=['response'],
+                )
+            except Exception as e:
+                logger.debug('启动监听响应数据收集器失败: %s', e)
+                self._response_collector = None
+
+        # Listener only yields completed/failed packets.  Avoid subscribing to
+        # network.beforeRequestSent here: high-traffic pages can flood the BiDi
+        # event stream with request-start events that this class never consumes,
+        # delaying unrelated commands such as script.evaluate.
         events = [
-            'network.beforeRequestSent',
             'network.responseCompleted',
             'network.fetchError',
         ]
@@ -302,6 +422,18 @@ class Listener(object):
         driver = self._owner._driver
         driver.remove_callback('network.responseCompleted')
         driver.remove_callback('network.fetchError')
+
+        if self._response_collector:
+            for packet in self.steps:
+                try:
+                    packet.get_response_body()
+                except Exception:
+                    pass
+            try:
+                self._response_collector.remove()
+            except Exception:
+                pass
+            self._response_collector = None
 
         logger.debug('停止监听网络事件')
 
@@ -366,7 +498,7 @@ class Listener(object):
                 break
 
             try:
-                packet = self._caught.get(timeout=min(remaining, 0.5))
+                packet = _queue_get(self._caught, timeout=min(remaining, 0.5))
                 results.append(packet)
             except Empty:
                 continue
@@ -395,7 +527,8 @@ class Listener(object):
                 self._caught.get_nowait()
             except Empty:
                 break
-        self._packets.clear()
+        with self._lock:
+            self._packets.clear()
 
     def _on_response(self, params):
         """处理响应完成事件"""
@@ -426,10 +559,11 @@ class Listener(object):
             status=response.get('status', 0),
             headers=headers,
             timestamp=params.get('timestamp', 0),
+            response_collector=self._response_collector,
+            owner=self._owner,
         )
 
-        self._caught.put(packet)
-        self._packets.append(packet)
+        self._offer(packet)
 
     def _on_fetch_error(self, params):
         """处理请求失败事件"""
@@ -451,8 +585,28 @@ class Listener(object):
             timestamp=params.get('timestamp', 0),
         )
 
-        self._caught.put(packet)
-        self._packets.append(packet)
+        self._offer(packet)
+
+    def _offer(self, packet):
+        """记录一个数据包。
+
+        本方法运行在 driver 的事件线程上，任何阻塞都会拖慢整个事件分发，
+        因此等待队列满时丢弃最旧的未消费包，而不是阻塞等待空位。
+        """
+        with self._lock:
+            self._packets.append(packet)
+
+        try:
+            self._caught.put_nowait(packet)
+        except Full:
+            try:
+                self._caught.get_nowait()
+            except Empty:
+                pass
+            try:
+                self._caught.put_nowait(packet)
+            except Full:
+                logger.debug('listen 等待队列已满，丢弃数据包: %s', packet.url)
 
     def _match(self, url, method):
         """检查 URL 和方法是否匹配"""
@@ -477,7 +631,8 @@ class Listener(object):
         while not self._caught.empty():
             try:
                 packet = self._caught.get_nowait()
-                if packet not in self._packets:
-                    self._packets.append(packet)
             except Empty:
                 break
+            with self._lock:
+                if packet not in self._packets:
+                    self._packets.append(packet)

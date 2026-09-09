@@ -9,6 +9,7 @@ import base64
 import logging
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit, urlunsplit
 
 from .._base.base import BasePage
 from .._base.driver import ContextDriver
@@ -17,6 +18,8 @@ from .._bidi import script as bidi_script
 from .._functions.bidi_values import parse_value, make_shared_ref
 from .._functions.locator import parse_locator
 from .._functions.settings import Settings
+from .._functions.sleep import sleep as _sleep
+from .._bidi.input_ import build_human_click_actions
 from ..errors import ElementNotFoundError, JavaScriptError, WaitTimeoutError, BiDiError
 
 logger = logging.getLogger("ruyipage")
@@ -29,6 +32,7 @@ if TYPE_CHECKING:
     from .._units.browser import BrowserManager
     from .._units.contexts import ContextManager
     from .._units.downloads import DownloadsManager
+    from .._units.prompts import PromptsManager
     from .._units.events import EventTracker
     from .._units.network_tools import NetworkManager
     from .._units.navigation import NavigationTracker
@@ -36,6 +40,7 @@ if TYPE_CHECKING:
     from .._units.scroller import PageScroller
     from .._units.listener import Listener
     from .._units.interceptor import Interceptor
+    from .._units.capture import CaptureManager
     from .._units.window import WindowManager
     from .._units.prefs import PrefsManager
     from .._units.realm_tracker import RealmTracker
@@ -50,6 +55,55 @@ if TYPE_CHECKING:
     from .._units.extensions import ExtensionManager
     from .._base.browser import Firefox
     from .._pages.firefox_frame import FirefoxFrame
+
+
+def _normalize_frame_url(url):
+    if not url:
+        return ""
+
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return url
+
+    if not parts.scheme or not parts.netloc or not parts.hostname:
+        return url
+
+    scheme = parts.scheme.lower()
+    hostname = parts.hostname.lower()
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = "[{}]".format(hostname)
+
+    netloc = hostname
+    if parts.username:
+        userinfo = parts.username
+        if parts.password is not None:
+            userinfo = "{}:{}".format(userinfo, parts.password)
+        netloc = "{}@{}".format(userinfo, netloc)
+
+    is_default_port = (scheme == "http" and port == 80) or (
+        scheme == "https" and port == 443
+    )
+    if port is not None and not is_default_port:
+        netloc = "{}:{}".format(netloc, port)
+
+    return urlunsplit((scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _frame_url_matches(element_url, context_url):
+    if not element_url or not context_url:
+        return False
+    if element_url in context_url:
+        return True
+
+    normalized_element_url = _normalize_frame_url(element_url)
+    normalized_context_url = _normalize_frame_url(context_url)
+    return bool(
+        normalized_element_url
+        and normalized_context_url
+        and normalized_element_url in normalized_context_url
+    )
 
 
 class FirefoxBase(BasePage):
@@ -78,7 +132,9 @@ class FirefoxBase(BasePage):
         self._local_storage = None
         self._session_storage = None
         self._console = None
+        self._debugger = None
         self._interceptor = None
+        self._capture = None
         self._network_manager = None
         self._window = None
         self._browser_manager = None
@@ -86,6 +142,7 @@ class FirefoxBase(BasePage):
         self._emulation = None
         self._extensions = None
         self._downloads = None
+        self._prompts = None
         self._events = None
         self._navigation = None
         self._prefs = None
@@ -95,6 +152,7 @@ class FirefoxBase(BasePage):
         self._last_prompt_closed = None
         self._prompt_subscription_id = None
         self._prompt_handler_config = None
+        self._snapshot_in_progress = False  # 诊断快照可重入保护
 
     def _init_context(self, browser, context_id):
         """初始化上下文连接
@@ -107,8 +165,13 @@ class FirefoxBase(BasePage):
         self._context_id = context_id
         self._driver = ContextDriver(browser.driver, context_id)
         self._load_mode = browser.options.load_mode
+        ensure_baseline = getattr(browser, "_ensure_baseline_preload", None)
+        if callable(ensure_baseline):
+            ensure_baseline()
         self._maybe_enable_xpath_picker()
         self._maybe_enable_action_visual()
+        self._maybe_enable_trace()
+        self._maybe_enable_failure_snapshot()
 
     def _maybe_enable_xpath_picker(self):
         """按启动配置自动启用 XPath picker。"""
@@ -185,6 +248,20 @@ class FirefoxBase(BasePage):
         except Exception as e:
             logger.debug("鼠标行为可视化重新注入失败: %s", e)
 
+    def _maybe_enable_trace(self):
+        """按启动配置自动启用 debug trace。"""
+        options = getattr(self._browser, "options", None)
+        if options and getattr(options, "trace_enabled", False):
+            Settings.trace_enabled = True
+            # 触发 tracer 实例的延迟创建，确保 run() 中 _tracer 判断生效
+            _ = self._driver._browser_driver.tracer
+
+    def _maybe_enable_failure_snapshot(self):
+        """按启动配置自动启用失败诊断快照。"""
+        options = getattr(self._browser, "options", None)
+        if options and getattr(options, "failure_snapshot_enabled", False):
+            Settings.failure_snapshot_enabled = True
+
     @staticmethod
     def _get_action_visual_script():
         """鼠标行为可视化调试脚本 — 数据驱动渲染，不依赖 DOM 事件。
@@ -250,12 +327,6 @@ class FirefoxBase(BasePage):
             'pointer-events:none;z-index:2147483645;';
         document.documentElement.appendChild(canvas);
     }
-    function resizeCanvas() {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-    }
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
     var ctx = canvas.getContext('2d');
 
     // --- 轨迹状态 ---
@@ -266,7 +337,54 @@ class FirefoxBase(BasePage):
     var moveQueue = [];
     var moveRaf = 0;
 
+    function syncCanvasSize() {
+        var width = window.innerWidth;
+        var height = window.innerHeight;
+        if (canvas.width === width && canvas.height === height) {
+            return false;
+        }
+        canvas.width = width;
+        canvas.height = height;
+        return true;
+    }
+
+    function clearMotionState() {
+        trail = [];
+        moveQueue = [];
+        if (moveRaf) {
+            window.cancelAnimationFrame(moveRaf);
+            moveRaf = 0;
+        }
+        if (fadeTimer) {
+            clearInterval(fadeTimer);
+            fadeTimer = null;
+        }
+        fadeOpacity = 1.0;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        dot.style.display = 'none';
+        coord.style.display = 'none';
+    }
+
+    function resizeCanvas() {
+        syncCanvasSize();
+        clearMotionState();
+    }
+
+    function clearMotionStateIfResized() {
+        if (!syncCanvasSize()) {
+            return false;
+        }
+        clearMotionState();
+        return true;
+    }
+
+    syncCanvasSize();
+    window.addEventListener('resize', resizeCanvas);
+
     function drawTrail() {
+        if (clearMotionStateIfResized()) {
+            return;
+        }
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         if (trail.length < 2) return;
         var len = trail.length;
@@ -316,8 +434,19 @@ class FirefoxBase(BasePage):
 
     // === API: 渲染鼠标移动轨迹 ===
     // points: [[x,y], [x,y], ...]
+    function appendTrailPoint(pt) {
+        trail.push(pt);
+        if (trail.length > MAX_TRAIL) {
+            trail.shift();
+        }
+        moveDot(pt[0], pt[1]);
+    }
+
     function pumpMoves() {
         moveRaf = 0;
+        if (clearMotionStateIfResized()) {
+            return;
+        }
         if (!moveQueue.length) {
             startFadeOut();
             return;
@@ -327,12 +456,7 @@ class FirefoxBase(BasePage):
 
         var batch = Math.min(moveQueue.length, 3);
         for (var i = 0; i < batch; i++) {
-            var pt = moveQueue.shift();
-            trail.push(pt);
-            if (trail.length > MAX_TRAIL) {
-                trail.shift();
-            }
-            moveDot(pt[0], pt[1]);
+            appendTrailPoint(moveQueue.shift());
         }
         drawTrail();
         moveRaf = window.requestAnimationFrame(pumpMoves);
@@ -340,6 +464,7 @@ class FirefoxBase(BasePage):
 
     function renderMoves(points) {
         if (!points || !points.length) return;
+        clearMotionStateIfResized();
         for (var i = 0; i < points.length; i++) {
             moveQueue.push(points[i]);
         }
@@ -350,6 +475,16 @@ class FirefoxBase(BasePage):
 
     // === API: 渲染点击动画 ===
     function renderClick(x, y, button) {
+        clearMotionStateIfResized();
+        if (moveRaf) {
+            window.cancelAnimationFrame(moveRaf);
+            moveRaf = 0;
+        }
+        while (moveQueue.length) {
+            appendTrailPoint(moveQueue.shift());
+        }
+        drawTrail();
+        startFadeOut();
         var color = button === 2 ? '255,60,60' : button === 1 ? '60,60,255' : '60,200,60';
         moveDot(x, y);
 
@@ -2912,7 +3047,7 @@ class FirefoxBase(BasePage):
 
         if (data.shadowPath && data.shadowPath.length) {
             lines.push('');
-            lines.push('# 如果页面暴露了 closed shadow 调试桥，也可以改成 with_shadow() 形式：');
+            lines.push('# open / closed shadow 都可以改成 with_shadow() 形式：');
             lines.push('# with shadow_host1.with_shadow("open") as root:');
             lines.push('#     target = root.ele("xpath:...")');
         }
@@ -2920,7 +3055,7 @@ class FirefoxBase(BasePage):
         if (String(data.context || '').includes('shadow(') && (!data.shadowPath || !data.shadowPath.length)) {
             lines.push('');
             lines.push('# 注意：当前命中元素位于 shadow 场景，但未能还原 host 链。');
-            lines.push('# closed shadow 需要页面提供 __ruyiGetClosedShadowRoot 调试桥后，才能稳定生成访问代码。');
+            lines.push('# closed shadow 需要当前 Firefox 支持 BiDi privileged closed shadow 序列化，才能稳定生成访问代码。');
         }
 
         return lines.join('\n');
@@ -3272,6 +3407,13 @@ class FirefoxBase(BasePage):
     @property
     def url(self) -> str:
         """当前 URL"""
+        result = bidi_context.get_tree(
+            self._driver._browser_driver,
+            max_depth=0,
+        )
+        for context in result.get("contexts", []):
+            if context.get("context") == self._context_id:
+                return context.get("url", "")
         return self.run_js("location.href") or ""
 
     @property
@@ -3425,6 +3567,19 @@ class FirefoxBase(BasePage):
         return self._console
 
     @property
+    def debugger(self) -> "Debugger":
+        """JS 断点调试器
+
+        需要先在 options 上调用 ``enable_debugger()``，再调用
+        ``page.debugger.start()`` 建立调试通道。
+        """
+        if self._debugger is None:
+            from .._units.debugger import Debugger
+
+            self._debugger = Debugger(self)
+        return self._debugger
+
+    @property
     def intercept(self) -> "Interceptor":
         """网络请求拦截器"""
         if self._interceptor is None:
@@ -3432,6 +3587,35 @@ class FirefoxBase(BasePage):
 
             self._interceptor = Interceptor(self)
         return self._interceptor
+
+    @property
+    def capture(self) -> "CaptureManager":
+        """Passive request/response packet capture manager."""
+        if self._capture is None:
+            from .._units.capture import CaptureManager
+
+            self._capture = CaptureManager(self)
+        return self._capture
+
+    @property
+    def trace(self) -> "Tracer":
+        """调试追踪管理器（browser 级共享）。
+
+        记录 BiDi 命令、事件和网络活动的结构化时间线。
+        需先启用: ``Settings.trace_enabled = True`` 或
+        ``opts.enable_trace(True)``。
+
+        Returns:
+            Tracer: 追踪管理器。提供 summary(), dump_json(), latest(n) 等方法。
+
+        Examples::
+
+            Settings.trace_enabled = True
+            page.get('https://example.com')
+            print(page.trace.summary())   # 人类可读摘要
+            print(page.trace.dump_json()) # JSON 完整输出
+        """
+        return self._driver._browser_driver.tracer
 
     @property
     def network(self) -> "NetworkManager":
@@ -3559,6 +3743,15 @@ class FirefoxBase(BasePage):
         return self._downloads
 
     @property
+    def prompts(self) -> "PromptsManager":
+        """User prompt manager for alert/confirm/prompt dialogs."""
+        if self._prompts is None:
+            from .._units.prompts import PromptsManager
+
+            self._prompts = PromptsManager(self)
+        return self._prompts
+
+    @property
     def events(self) -> "EventTracker":
         """通用 BiDi 事件跟踪器。
 
@@ -3617,23 +3810,35 @@ class FirefoxBase(BasePage):
             wait_map = {"normal": "complete", "eager": "interactive", "none": "none"}
             wait = wait_map.get(self._load_mode, "complete")
 
-        if timeout:
-            old_timeout = Settings.bidi_timeout
-            Settings.bidi_timeout = timeout
+        # 将 timeout 作为局部值传递给 driver.run()，不再修改全局 Settings
+        nav_timeout = timeout if timeout else None
+        nav_lock = self._browser.get_context_nav_lock(self._context_id)
 
-        try:
-            bidi_context.navigate(
-                self._driver._browser_driver, self._context_id, url, wait=wait
-            )
-        except BiDiError as e:
-            # navigate 失败不一定是错误（如 none 模式下立即返回）
-            if self._is_expected_navigation_abort(e):
-                logger.debug("导航被页面主动中断（通常是自动刷新/跳转）: %s", e)
-            elif "timeout" not in str(e.error).lower():
-                logger.warning("导航错误: %s", e)
-        finally:
-            if timeout:
-                Settings.bidi_timeout = old_timeout
+        with nav_lock:
+            _nav_timed_out = False
+            try:
+                bidi_context.navigate(
+                    self._driver._browser_driver, self._context_id, url, wait=wait,
+                    timeout=nav_timeout,
+                )
+            except BiDiError as e:
+                # navigate 失败不一定是错误（如 none 模式下立即返回）
+                if self._is_expected_navigation_abort(e):
+                    logger.debug("导航被页面主动中断（通常是自动刷新/跳转）: %s", e)
+                elif "timeout" in str(e.error).lower():
+                    logger.warning("导航超时: %s -> %s (%s)", url, e.bidi_message, e.error)
+                    _nav_timed_out = True
+                    snap = self._capture_failure_snapshot(e)
+                    if snap and snap.saved_dir:
+                        logger.debug("导航超时快照: %s", snap.saved_dir)
+                else:
+                    logger.warning("导航错误: %s", e)
+                    snap = self._capture_failure_snapshot(e)
+                    if snap and snap.saved_dir:
+                        logger.debug("导航错误快照: %s", snap.saved_dir)
+
+            if wait != "none" and not _nav_timed_out:
+                self.wait_loading(timeout=nav_timeout)
 
         self._reinject_xpath_picker_if_needed()
         self._reinject_action_visual_if_needed()
@@ -3645,9 +3850,10 @@ class FirefoxBase(BasePage):
         Returns:
             self
         """
-        bidi_context.traverse_history(
-            self._driver._browser_driver, self._context_id, -1
-        )
+        with self._browser.get_context_nav_lock(self._context_id):
+            bidi_context.traverse_history(
+                self._driver._browser_driver, self._context_id, -1
+            )
         self._reinject_xpath_picker_if_needed()
         self._reinject_action_visual_if_needed()
         return self
@@ -3658,7 +3864,10 @@ class FirefoxBase(BasePage):
         Returns:
             self
         """
-        bidi_context.traverse_history(self._driver._browser_driver, self._context_id, 1)
+        with self._browser.get_context_nav_lock(self._context_id):
+            bidi_context.traverse_history(
+                self._driver._browser_driver, self._context_id, 1
+            )
         self._reinject_xpath_picker_if_needed()
         self._reinject_action_visual_if_needed()
         return self
@@ -3674,18 +3883,19 @@ class FirefoxBase(BasePage):
         """
         wait_map = {"normal": "complete", "eager": "interactive", "none": "none"}
         wait = wait_map.get(self._load_mode, "complete")
-        try:
-            bidi_context.reload(
-                self._driver._browser_driver,
-                self._context_id,
-                ignore_cache=ignore_cache,
-                wait=wait,
-            )
-        except BiDiError as e:
-            if self._is_expected_navigation_abort(e):
-                logger.debug("刷新被页面主动中断（通常是自动刷新/跳转）: %s", e)
-            else:
-                raise
+        with self._browser.get_context_nav_lock(self._context_id):
+            try:
+                bidi_context.reload(
+                    self._driver._browser_driver,
+                    self._context_id,
+                    ignore_cache=ignore_cache,
+                    wait=wait,
+                )
+            except BiDiError as e:
+                if self._is_expected_navigation_abort(e):
+                    logger.debug("刷新被页面主动中断（通常是自动刷新/跳转）: %s", e)
+                else:
+                    raise
         self._reinject_xpath_picker_if_needed()
         self._reinject_action_visual_if_needed()
         return self
@@ -3732,9 +3942,11 @@ class FirefoxBase(BasePage):
                 self._reinject_xpath_picker_if_needed()
                 self._reinject_action_visual_if_needed()
                 return self
-            time.sleep(0.1)
+            _sleep(0.1)
 
-        raise WaitTimeoutError("等待页面加载超时 ({}s)".format(timeout))
+        err = WaitTimeoutError("等待页面加载超时 ({}s)".format(timeout))
+        err.diagnostics = self._capture_failure_snapshot(err)
+        raise err
 
     # ===== 元素查找 =====
 
@@ -3799,6 +4011,107 @@ class FirefoxBase(BasePage):
             - 例如抓取搜索结果、表格行、商品卡片列表
         """
         return self._find_elements(locator, timeout=timeout)
+
+    def _shadow_roots_current_context(self, mode) -> "list[FirefoxElement]":
+        """Return shadow roots from this browsing context only."""
+        from .._elements.firefox_element import FirefoxElement
+
+        try:
+            result = bidi_script.evaluate(
+                self._driver._browser_driver,
+                self._context_id,
+                "document.documentElement",
+                serialization_options={
+                    "maxDomDepth": None,
+                    "includeShadowTree": "all",
+                },
+            )
+        except BiDiError as e:
+            logger.debug("shadow_roots serialization failed: %s", e)
+            return []
+        except Exception as e:
+            logger.debug("shadow_roots failed: %s", e)
+            return []
+
+        if result.get("type") == "exception":
+            logger.debug("shadow_roots script exception: %s", result)
+            return []
+
+        roots = []
+        seen = set()
+
+        def visit(remote_value):
+            if not isinstance(remote_value, dict):
+                return
+
+            value = remote_value.get("value") or {}
+            if not isinstance(value, dict):
+                return
+
+            shadow_root = value.get("shadowRoot")
+            if isinstance(shadow_root, dict):
+                shadow_value = shadow_root.get("value") or {}
+                shadow_mode = str(shadow_value.get("mode", "")).lower()
+                shared_id = shadow_root.get("sharedId")
+                if (
+                    shadow_root.get("type") == "node"
+                    and shared_id
+                    and shared_id not in seen
+                    and (mode == "all" or shadow_mode == mode)
+                ):
+                    root = FirefoxElement._from_node(self, shadow_root)
+                    if root is not None:
+                        roots.append(root)
+                        seen.add(shared_id)
+
+                visit(shadow_root)
+
+            for child in value.get("children") or []:
+                visit(child)
+
+        visit(result.get("result", {}))
+        return roots
+
+    def shadow_roots(self, mode="all", include_frames=True) -> "list[FirefoxElement]":
+        """Return open and/or closed shadow roots from this context and frames.
+
+        Args:
+            mode: ``"all"``, ``"open"``, or ``"closed"``.
+            include_frames: When true, also recursively scans descendant frames.
+
+        Returns:
+            list[FirefoxElement]: ShadowRoot node references that can be used as
+            normal search roots, for example ``root.ele("#inside")``.
+        """
+        mode = (mode or "all").lower()
+        if mode not in ("all", "open", "closed"):
+            raise ValueError("mode must be 'all', 'open', or 'closed'")
+
+        roots = []
+        seen = set()
+
+        def append_context_roots(context):
+            for root in context._shadow_roots_current_context(mode):
+                key = (getattr(root._owner, "_context_id", None), root._shared_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                roots.append(root)
+
+        def visit_context(context):
+            append_context_roots(context)
+            if not include_frames:
+                return
+            try:
+                frames = context.get_frames()
+            except Exception as e:
+                logger.debug("shadow_roots frame traversal failed: %s", e)
+                return
+            for frame in frames:
+                visit_context(frame)
+
+        visit_context(self)
+        return roots
 
     def s_ele(self, locator=None) -> "StaticElement | NoneElement":
         """获取静态元素（从当前 HTML 解析，不需要浏览器连接）
@@ -3867,10 +4180,21 @@ class FirefoxBase(BasePage):
             if time.time() >= end_time:
                 break
 
-            time.sleep(0.3)
+            _sleep(0.3)
 
         if raise_err:
-            raise ElementNotFoundError("未找到元素: {}".format(locator))
+            err = ElementNotFoundError("未找到元素: {}".format(locator))
+            err.diagnostics = self._capture_failure_snapshot(err)
+            raise err
+
+        # 未找到但不抛异常时，记录到 trace（warn 级别）
+        _tracer = getattr(
+            getattr(self._driver, '_browser_driver', None), '_tracer', None)
+        if _tracer and _tracer.enabled:
+            _tracer.record(
+                "error", "element_not_found",
+                {"locator": str(locator)[:200]},
+                context_id=self._context_id, status="warn")
 
         from .._elements.none_element import NoneElement
 
@@ -3891,7 +4215,7 @@ class FirefoxBase(BasePage):
             if time.time() >= end_time:
                 break
 
-            time.sleep(0.3)
+            _sleep(0.3)
 
         return []
 
@@ -4138,15 +4462,8 @@ class FirefoxBase(BasePage):
         Returns:
             JS 执行的返回值（自动转换为 Python 对象）
         """
-        if timeout:
-            old_timeout = Settings.bidi_timeout
-            Settings.bidi_timeout = timeout
-
-        try:
-            return self._run_js(script, *args, as_expr=as_expr, sandbox=sandbox)
-        finally:
-            if timeout:
-                Settings.bidi_timeout = old_timeout
+        return self._run_js(script, *args, as_expr=as_expr, sandbox=sandbox,
+                            timeout=timeout)
 
     def run_js_loaded(self, script, *args, as_expr=None, timeout=None):
         """等待页面加载完成后执行 JavaScript
@@ -4163,7 +4480,7 @@ class FirefoxBase(BasePage):
         self.wait.doc_loaded(timeout=timeout)
         return self.run_js(script, *args, as_expr=as_expr, timeout=timeout)
 
-    def _run_js(self, script, *args, as_expr=None, sandbox=None):
+    def _run_js(self, script, *args, as_expr=None, sandbox=None, timeout=None):
         """内部 JS 执行
 
         Detection rules (when ``as_expr is None``):
@@ -4189,7 +4506,8 @@ class FirefoxBase(BasePage):
         if use_expr:
             # ---------- expression mode ----------
             result = bidi_script.evaluate(
-                self._driver._browser_driver, self._context_id, script, sandbox=sandbox
+                self._driver._browser_driver, self._context_id, script, sandbox=sandbox,
+                timeout=timeout,
             )
         else:
             # ---------- function / callFunction mode ----------
@@ -4212,13 +4530,16 @@ class FirefoxBase(BasePage):
                 func_body,
                 sandbox=sandbox,
                 arguments=serialized_args,
+                timeout=timeout,
             )
 
         # 检查异常
         if result.get("type") == "exception":
             details = result.get("exceptionDetails", {})
             text = details.get("text", str(result))
-            raise JavaScriptError(text, details)
+            err = JavaScriptError(text, details)
+            err.diagnostics = self._capture_failure_snapshot(err)
+            raise err
 
         # 解析返回值
         return parse_value(result.get("result", {}))
@@ -4439,6 +4760,134 @@ class FirefoxBase(BasePage):
                 self._driver._browser_driver, filter_=filter_ or None
             )
 
+    # ===== 诊断快照 =====
+
+    def _capture_failure_snapshot(self, error):
+        """内部方法：收集自动化失败时的诊断快照。
+
+        每步独立 try/except，某步失败不影响其他收集。
+        先收集内存数据（零失败风险），最后才尝试 BiDi 调用。
+
+        Args:
+            error: 触发诊断的异常对象
+
+        Returns:
+            FailureSnapshot 或 None（功能未启用或正在进行中时返回 None）
+        """
+        if not Settings.failure_snapshot_enabled:
+            return None
+        # 可重入保护：防止诊断收集中的 BiDi 调用再次失败触发递归
+        if self._snapshot_in_progress:
+            return None
+        self._snapshot_in_progress = True
+
+        from .._units.tracer import FailureSnapshot
+
+        snap = FailureSnapshot()
+        snap.error_type = type(error).__name__
+        snap.error_message = str(error)[:500]
+        snap.context_id = self._context_id
+
+        try:
+            # 步骤 1: 内存数据（零失败风险）
+            try:
+                tracer = self._driver._browser_driver.tracer
+                snap.trace_entries = tracer.latest(50)
+                snap.recent_requests = tracer.recent_requests(
+                    Settings.snapshot_recent_requests)
+            except Exception as exc:
+                snap.capture_errors.append('trace: {}'.format(exc))
+
+            # 步骤 2: BiDi 调用（可能失败）
+            # 先检查连接是否存活
+            if not getattr(self._driver, 'is_running', False):
+                snap.capture_errors.append(
+                    'driver not running, skipping BiDi calls')
+                return snap
+
+            # 2a: URL
+            try:
+                snap.url = self.run_js("location.href") or ""
+            except Exception as exc:
+                snap.url = '<unavailable>'
+                snap.capture_errors.append('url: {}'.format(exc))
+
+            # 2b: Screenshot
+            snap_bytes = None
+            try:
+                snap_bytes = self.screenshot(as_bytes=True)
+            except Exception as exc:
+                snap.capture_errors.append('screenshot: {}'.format(exc))
+
+            # 2c: DOM HTML（截断到 Settings.snapshot_dom_max_bytes）
+            dom_html = None
+            try:
+                raw = self.run_js(
+                    "document.documentElement.outerHTML") or ""
+                max_b = Settings.snapshot_dom_max_bytes
+                if len(raw) > max_b:
+                    dom_html = raw[:max_b] + '\n<!-- truncated -->\n'
+                else:
+                    dom_html = raw
+            except Exception as exc:
+                snap.capture_errors.append('dom: {}'.format(exc))
+
+            # 步骤 3: 文件保存
+            snap_dir = getattr(
+                getattr(self._browser, 'options', None),
+                'snapshot_dir', None
+            )
+            if snap_dir and (snap_bytes or dom_html):
+                try:
+                    self._save_snapshot_files(
+                        snap, snap_dir, snap_bytes, dom_html)
+                except Exception as exc:
+                    snap.capture_errors.append('save: {}'.format(exc))
+
+        finally:
+            self._snapshot_in_progress = False
+
+        return snap
+
+    @staticmethod
+    def _save_snapshot_files(snap, base_dir, screenshot_bytes, dom_html):
+        """保存诊断快照文件到磁盘。
+
+        Args:
+            snap: FailureSnapshot 对象
+            base_dir: 保存根目录
+            screenshot_bytes: 截图 bytes 或 None
+            dom_html: DOM HTML 字符串或 None
+        """
+        import os
+        import json as _json
+
+        ts = time.strftime('%Y%m%d_%H%M%S')
+        err_name = snap.error_type[:50]
+        ctx_short = (snap.context_id or 'unknown')[:8]
+        folder_name = '{}_{}_{}'.format(ts, err_name, ctx_short)
+        folder = os.path.join(base_dir, folder_name)
+        os.makedirs(folder, exist_ok=True)
+        snap.saved_dir = folder
+
+        if screenshot_bytes:
+            path = os.path.join(folder, 'screenshot.png')
+            with open(path, 'wb') as f:
+                f.write(screenshot_bytes)
+            snap.screenshot_path = path
+
+        if dom_html:
+            path = os.path.join(folder, 'dom.html')
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(dom_html)
+            snap.dom_path = path
+
+        # context.json — 结构化诊断信息
+        ctx_path = os.path.join(folder, 'context.json')
+        with open(ctx_path, 'w', encoding='utf-8') as f:
+            _json.dump(snap.to_dict(), f, ensure_ascii=False,
+                       indent=2, default=str)
+
     # ===== 截图 / PDF =====
 
     def screenshot(self, path=None, full_page=False, as_bytes=None, as_base64=None):
@@ -4550,7 +4999,7 @@ class FirefoxBase(BasePage):
                 # 先等待 userPromptOpened 事件真正到达，避免“页面已调用 confirm，
                 # 但浏览器侧 prompt 状态尚未建立”时过早处理。
                 if not getattr(drv, "alert_flag", False):
-                    time.sleep(0.05)
+                    _sleep(0.05)
                     continue
 
                 bidi_context.handle_user_prompt(
@@ -4562,7 +5011,7 @@ class FirefoxBase(BasePage):
                 return self
             except BiDiError as e:
                 if "no such alert" in str(e.error).lower():
-                    time.sleep(0.05)
+                    _sleep(0.05)
                     continue
                 raise
 
@@ -4650,6 +5099,21 @@ class FirefoxBase(BasePage):
         from .._bidi import browsing_context as bidi_context
 
         self.clear_prompt_handler()
+        valid_actions = {"accept", "dismiss", "ignore"}
+        actions = {
+            "alert": alert,
+            "confirm": confirm,
+            "prompt": prompt,
+            "default": default,
+        }
+        for key, value in actions.items():
+            if value not in valid_actions:
+                raise ValueError(
+                    "{} prompt handler action must be one of {}".format(
+                        key, ", ".join(sorted(valid_actions))
+                    )
+                )
+
         self._prompt_handler_config = {
             "alert": alert,
             "confirm": confirm,
@@ -4662,21 +5126,33 @@ class FirefoxBase(BasePage):
             if params.get("context") != self.tab_id:
                 return
             self._last_prompt_opened = dict(params)
+            if not self._prompt_handler_config:
+                return
+
+            prompt_type = params.get("type") or "default"
+            action = self._prompt_handler_config.get(
+                prompt_type, self._prompt_handler_config.get("default", "accept")
+            )
+            user_text = None
             if (
-                params.get("type") == "prompt"
-                and self._prompt_handler_config
-                and self._prompt_handler_config.get("prompt") == "ignore"
+                prompt_type == "prompt"
                 and self._prompt_handler_config.get("prompt_text") is not None
+                and action in {"accept", "ignore"}
             ):
+                action = "accept"
+                user_text = str(self._prompt_handler_config.get("prompt_text"))
+
+            if action != "ignore":
                 try:
                     bidi_context.handle_user_prompt(
                         self._driver._browser_driver,
                         self.tab_id,
-                        accept=True,
-                        user_text=str(self._prompt_handler_config.get("prompt_text")),
+                        accept=(action == "accept"),
+                        user_text=user_text,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("auto prompt handling failed: %s", e)
+            return
 
         def on_closed(params):
             if params.get("context") != self.tab_id:
@@ -4753,7 +5229,7 @@ class FirefoxBase(BasePage):
             prompt = self.get_user_prompt()
             if prompt:
                 return prompt
-            time.sleep(0.05)
+            _sleep(0.05)
         return None
 
     def handle_prompt(self, accept=True, text=None, timeout=3):
@@ -4875,8 +5351,8 @@ class FirefoxBase(BasePage):
                         user_text=str(password),
                     )
                     done.set()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("处理 HTTP 认证对话框失败: %s", e)
 
         def on_closed(params):
             if params.get("context") != self.tab_id:
@@ -4905,7 +5381,7 @@ class FirefoxBase(BasePage):
         try:
             self.trigger_prompt_target(trigger_locator, trigger=trigger)
             done.wait(timeout)
-            time.sleep(0.2)
+            _sleep(0.2)
         finally:
             try:
                 if sub_id:
@@ -4932,7 +5408,36 @@ class FirefoxBase(BasePage):
 
     # ===== 视口 / 模拟 =====
 
-    def set_viewport(self, width, height, device_pixel_ratio=None) -> "FirefoxBase":
+    def set_window_size(
+        self, width, height, device_pixel_ratio=None
+    ) -> "FirefoxBase":
+        """设置当前浏览器窗口外框尺寸。
+
+        Args:
+            width: 目标宽度（CSS 像素）。
+            height: 目标高度（CSS 像素）。
+            device_pixel_ratio: 已保留用于兼容旧调用；此方法不修改 DPR。
+
+        Returns:
+            self: 原页面对象，便于链式调用。
+
+        说明:
+            - ``FirefoxOptions.set_window_size()`` 只负责启动时窗口参数。
+            - 此方法只调整浏览器外框，``window.inner*`` / ``page.rect.viewport_size``
+              由 Firefox 按 chrome 边框、工具栏、DPI 等自然计算。
+            - 需要显式模拟视口时请调用 ``set_viewport()``。
+            - 需要 hook ``screen.*`` 时请调用 ``page.emulation.set_screen_size()``。
+        """
+        set_size_only = getattr(self.window, "_set_size_only", None)
+        if callable(set_size_only):
+            set_size_only(width, height)
+        else:
+            self.window.set_size(width, height)
+        return self
+
+    def set_viewport(
+        self, width, height, device_pixel_ratio=None, timeout=None
+    ) -> "FirefoxBase":
         """设置当前页面视口大小。
 
         Args:
@@ -4952,12 +5457,17 @@ class FirefoxBase(BasePage):
             - 快速调整页面可视区域
             - 与移动端模拟配合设置 viewport + DPR
         """
+        kwargs = {
+            "width": width,
+            "height": height,
+            "timeout": timeout,
+        }
+        if device_pixel_ratio is not None:
+            kwargs["device_pixel_ratio"] = device_pixel_ratio
         bidi_context.set_viewport(
             self._driver._browser_driver,
             self._context_id,
-            width=width,
-            height=height,
-            device_pixel_ratio=device_pixel_ratio,
+            **kwargs,
         )
         return self
 
@@ -5139,12 +5649,15 @@ class FirefoxBase(BasePage):
         匹配优先级：
             1) context_id（最精确）
             2) index
-            3) locator（按 iframe src 与 child context URL 尝试匹配）
-            4) 兜底返回第一个 child context
+            3) locator（通过 iframe contentWindow 精确获取 context）
+            4) locator 精确映射失败时，按 src 与 child context URL 匹配
+            5) locator 只有一个 child 时返回该 child
+            6) 未提供选择条件时返回第一个 child context
 
         说明：
             - BiDi 下每个 iframe 都有独立 context，可直接操作。
-            - 对 srcdoc/动态 iframe，URL 匹配可能不可用，因此保留 index 与兜底策略。
+            - contentWindow 可区分 srcdoc、同 URL 等 URL 无法消歧的 iframe。
+            - locator 对应多个 child 且无法精确匹配时返回 None，不猜测首个 child。
         """
         from .._pages.firefox_frame import FirefoxFrame
 
@@ -5170,16 +5683,49 @@ class FirefoxBase(BasePage):
             if not ele:
                 return None
 
+            direct_context_id = None
+            try:
+                direct_result = bidi_script.call_function(
+                    self._driver._browser_driver,
+                    self._context_id,
+                    "(frame) => frame.contentWindow",
+                    arguments=[ele._make_shared_ref()],
+                    result_ownership="none",
+                )
+                if direct_result.get("type") == "success":
+                    remote_value = direct_result.get("result", {})
+                    if remote_value.get("type") == "window":
+                        window_value = remote_value.get("value", {})
+                        context = window_value.get("context")
+                        if isinstance(context, str) and context:
+                            direct_context_id = context
+            except Exception as e:
+                logger.debug(
+                    "iframe contentWindow context mapping failed: %s",
+                    e,
+                    exc_info=True,
+                )
+                direct_context_id = None
+
+            if direct_context_id:
+                return FirefoxFrame(self._browser, direct_context_id, self)
+
             # 尝试通过 URL 匹配
             ele_src = ele.attr("src") or ""
+            matches = []
             for child in children:
                 child_url = child.get("url", "")
-                if ele_src and ele_src in child_url:
-                    return FirefoxFrame(self._browser, child["context"], self)
+                if _frame_url_matches(ele_src, child_url):
+                    matches.append(child)
+
+            if len(matches) == 1:
+                return FirefoxFrame(self._browser, matches[0]["context"], self)
 
             # 如果只有一个 iframe，直接返回第一个 child
             if len(children) == 1:
                 return FirefoxFrame(self._browser, children[0]["context"], self)
+
+            return None
 
         # 返回第一个子 context
         if children:
@@ -5202,6 +5748,33 @@ class FirefoxBase(BasePage):
         children = contexts[0].get("children", []) if contexts else []
 
         return [FirefoxFrame(self._browser, c["context"], self) for c in children]
+
+    def get_all_frames(self) -> "list[FirefoxFrame]":
+        """递归获取当前 browsing context 下的所有 iframe/frame。
+
+        Returns:
+            list[FirefoxFrame]: 按深度优先顺序返回所有后代 frame。
+        """
+        from .._pages.firefox_frame import FirefoxFrame
+
+        result = bidi_context.get_tree(
+            self._driver._browser_driver, root=self._context_id
+        )
+        contexts = result.get("contexts", [])
+        children = contexts[0].get("children", []) if contexts else []
+        frames = []
+
+        def collect(nodes, parent):
+            for node in nodes:
+                context_id = node.get("context")
+                if not context_id:
+                    continue
+                frame = FirefoxFrame(self._browser, context_id, parent)
+                frames.append(frame)
+                collect(node.get("children") or [], frame)
+
+        collect(children, self)
+        return frames
 
     @contextmanager
     def with_frame(self, locator=None, index=None, context_id=None):
@@ -5281,7 +5854,7 @@ class FirefoxBase(BasePage):
 
                 if not cf_ctx:
                     logger.debug("未找到 CF iframe，继续等待...")
-                    time.sleep(check_interval)
+                    _sleep(check_interval)
                     continue
 
                 cf_ctx_id = cf_ctx["context"]
@@ -5313,7 +5886,7 @@ class FirefoxBase(BasePage):
 
                 if size.get("w", 0) == 0 or size.get("h", 0) == 0:
                     logger.warning("无法获取 iframe 尺寸")
-                    time.sleep(check_interval)
+                    _sleep(check_interval)
                     continue
 
                 logger.info(f"iframe 尺寸: {size['w']}×{size['h']}")
@@ -5353,50 +5926,48 @@ class FirefoxBase(BasePage):
                                 checkbox_data[key] = val.get("value", False)
 
                 # 直接在 CF iframe 内部触发点击（绕过 closed shadow root）
+                max_x = max(1, int(size["w"]) - 1)
+                max_y = max(1, int(size["h"]) - 1)
+
                 if checkbox_data.get("found"):
-                    click_x = int(checkbox_data["x"])
-                    click_y = int(checkbox_data["y"])
+                    click_x = max(1, min(int(checkbox_data["x"]), max_x))
+                    click_y = max(1, min(int(checkbox_data["y"]), max_y))
                     logger.info(f"在 iframe 内部点击 checkbox: ({click_x}, {click_y})")
                 else:
                     # fallback: 点击 iframe 左侧（checkbox 通常在左边）
-                    click_x = 35
-                    click_y = size["h"] // 2
+                    click_x = min(35, max_x)
+                    click_y = max(1, min(size["h"] // 2, max_y))
                     logger.info(f"在 iframe 内部点击左侧: ({click_x}, {click_y})")
 
+                # 使用拟人轨迹点击（Bezier/弧线/超出回拉 + 悬停抖动 + 点击后漂移）
+                # 起始坐标限制在 iframe 范围内，避免坐标越界
+                import random as _rand
+                start_min_x = min(max(1, click_x + 10), max_x)
+                start_max_x = max(start_min_x, min(max_x, click_x + 40))
+                start_min_y = max(1, min(click_y - 10, max_y))
+                start_max_y = max(start_min_y, min(max_y, click_y + 10))
+                start_x = _rand.randint(start_min_x, start_max_x)
+                start_y = _rand.randint(start_min_y, start_max_y)
+                human_actions = build_human_click_actions(
+                    click_x,
+                    click_y,
+                    sx=start_x,
+                    sy=start_y,
+                    min_x=1,
+                    max_x=max_x,
+                    min_y=1,
+                    max_y=max_y,
+                )
                 self._driver._browser_driver.run(
                     "input.performActions",
                     {
                         "context": cf_ctx_id,
-                        "actions": [
-                            {
-                                "type": "pointer",
-                                "id": "mouse_cf",
-                                "parameters": {"pointerType": "mouse"},
-                                "actions": [
-                                    {
-                                        "type": "pointerMove",
-                                        "x": click_x,
-                                        "y": click_y,
-                                        "duration": 0,
-                                    },
-                                    {
-                                        "type": "pause",
-                                        "duration": random.randint(50, 150),
-                                    },
-                                    {"type": "pointerDown", "button": 0},
-                                    {
-                                        "type": "pause",
-                                        "duration": random.randint(80, 160),
-                                    },
-                                    {"type": "pointerUp", "button": 0},
-                                ],
-                            }
-                        ],
+                        "actions": human_actions,
                     },
                 )
 
                 # 等待验证结果
-                time.sleep(3)
+                _sleep(3)
 
                 # 检查是否通过
                 body_text = self.run_js("document.body.innerText") or ""
@@ -5406,7 +5977,7 @@ class FirefoxBase(BasePage):
 
             except Exception as e:
                 logger.warning(f"CF 验证失败: {e}")
-                time.sleep(check_interval)
+                _sleep(check_interval)
                 continue
 
         logger.error(f"CF 验证超时（{timeout}秒）")
@@ -5414,18 +5985,40 @@ class FirefoxBase(BasePage):
 
     # ===== Emulation 便捷方法 =====
 
-    def set_geolocation(self, latitude, longitude, accuracy=100):
+    def set_geolocation(
+        self,
+        latitude,
+        longitude,
+        accuracy=100,
+        *,
+        altitude=None,
+        altitude_accuracy=None,
+        heading=None,
+        speed=None,
+    ):
         """设置地理位置 (FF139+)
 
         Args:
             latitude: 纬度
             longitude: 经度
             accuracy: 精度（米）
+            altitude: 海拔（米），可选
+            altitude_accuracy: 海拔精度（米），可选
+            heading: 航向角 [0, 360)，可选
+            speed: 速度（米/秒），可选
 
         Returns:
             self
         """
-        self.emulation.set_geolocation(latitude, longitude, accuracy)
+        self.emulation.set_geolocation(
+            latitude,
+            longitude,
+            accuracy,
+            altitude=altitude,
+            altitude_accuracy=altitude_accuracy,
+            heading=heading,
+            speed=speed,
+        )
         return self
 
     def set_timezone(self, timezone_id):
@@ -5446,12 +6039,12 @@ class FirefoxBase(BasePage):
         self.emulation.set_locale(locales)
         return self
 
-    def set_screen_orientation(self, orientation_type, angle=0):
+    def set_screen_orientation(self, orientation_type, angle=None):
         """设置屏幕方向 (FF144+)
 
         Args:
             orientation_type: 'portrait-primary'/'landscape-primary' 等
-            angle: 0/90/180/270
+            angle: 可选的 0/90/180/270，用于推断并校验 natural orientation。
 
         Returns:
             self
@@ -5537,6 +6130,7 @@ class FirefoxBase(BasePage):
             context=self._context_id,
             expression=expression,
             await_promise=await_promise,
+            result_ownership="root",
         )
         return ScriptResult(result)
 

@@ -5,6 +5,11 @@ import time
 from queue import Empty, Queue
 
 from .._bidi import session as bidi_session
+from .._functions.queue_utils import queue_get as _queue_get
+
+import logging
+
+logger = logging.getLogger('ruyipage')
 
 
 class NavigationEvent(object):
@@ -15,6 +20,7 @@ class NavigationEvent(object):
             常见值：``'browsingContext.navigationStarted'``、
             ``'browsingContext.fragmentNavigated'``、
             ``'browsingContext.historyUpdated'``、
+            ``'browsingContext.navigationAborted'``、
             ``'browsingContext.navigationCommitted'``、
             ``'browsingContext.navigationFailed'``。
         params: 事件原始参数字典。
@@ -72,6 +78,7 @@ class NavigationTracker(object):
         "browsingContext.historyUpdated",
         "browsingContext.domContentLoaded",
         "browsingContext.load",
+        "browsingContext.navigationAborted",
         "browsingContext.navigationCommitted",
         "browsingContext.navigationFailed",
     ]
@@ -83,6 +90,8 @@ class NavigationTracker(object):
         self._entries = []
         self._subscription_id = None
         self._events = []
+        self._unsupported_events = []
+        self._last_subscribe_error = None
 
     @property
     def listening(self):
@@ -129,18 +138,35 @@ class NavigationTracker(object):
             self.stop()
 
         self.clear()
-        self._events = list(events or self.DEFAULT_EVENTS)
+        requested_events = list(events or self.DEFAULT_EVENTS)
+        self._events = requested_events
+        self._unsupported_events = []
+        self._last_subscribe_error = None
 
         try:
-            result = bidi_session.subscribe(
+            result = bidi_session.subscribe_compatible(
                 self._owner._driver._browser_driver,
-                self._events,
+                requested_events,
                 contexts=[self._owner._context_id],
             )
             self._subscription_id = result.get("subscription")
-        except Exception:
+            self._events = list(result.get("events", []))
+            self._unsupported_events = [
+                event for event, _error in result.get("failed_events", [])
+            ]
+            for event, error in result.get("failed_events", []):
+                logger.debug("跳过当前 Firefox 不支持的导航事件 %s: %s", event, error)
+        except Exception as e:
+            logger.debug("订阅导航事件失败: %s", e)
+            self._last_subscribe_error = e
             self._subscription_id = None
             self._events = []
+            self._unsupported_events = requested_events
+            self._listening = False
+            return False
+
+        if not self._events:
+            self._subscription_id = None
             self._listening = False
             return False
 
@@ -228,7 +254,7 @@ class NavigationTracker(object):
         while time.time() < end_time:
             remaining = end_time - time.time()
             try:
-                item = self._queue.get(timeout=min(remaining, 0.2))
+                item = _queue_get(self._queue, timeout=min(remaining, 0.2))
             except Empty:
                 continue
             if self._match(item, event=event, url_contains=url_contains):

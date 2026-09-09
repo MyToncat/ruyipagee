@@ -6,9 +6,9 @@
 
 [简体中文](./README.md) | [English](./README_EN.md)
 
-> 专用于 **AI 分析** 和 **数据采集** 场景，可拦截任意请求响应包。
+> 专用于 **AI 分析** 和 **数据采集** 场景，可拦截任意请求响应包。自带好用的过检测 Win/Linux 火狐指纹浏览器内核。
 >
-> Built for **AI analysis** and **data capture** workflows, with the ability to intercept arbitrary request and response packets.
+> Built for **AI analysis** and **data capture** workflows, with the ability to intercept arbitrary request and response packets. Ships with a battle-tested anti-detection Firefox fingerprint browser engine for Windows and Linux.
 
 > **下一代自动化框架**
 >
@@ -16,7 +16,10 @@
 > - 大量 **`isTrusted`** 原生动作，**无自动化检测点**
 > - 支持多种 JS 事件构造附加 **`ruyi: true`**，让 `Event` / `InputEvent` / `MouseEvent` / `KeyboardEvent` 等事件的 **`isTrusted`** 更贴近真实交互
 > - 支持 **ADS** 等指纹浏览器**直接自动化接管**
+> - 自带 **HTTP / SOCKS5 密码代理**支持，支持**一个 tab 一个密码代理**
 > - 基于 **Firefox + WebDriver BiDi**
+> - 可以直接获取 **closed shadow root** 节点
+> - 内置 **JS 断点调试**（`page.debugger`）：断点 / 条件断点 / 日志断点 / 单步 / 调用栈 / 作用域 / 读源码 / 异常暂停 / 属性监视点
 > - 更适合**高风控场景**
 
 [![PyPI version](https://img.shields.io/pypi/v/ruyiPage.svg)](https://pypi.org/project/ruyiPage/)
@@ -25,45 +28,23 @@
 [![GitHub stars](https://img.shields.io/github/stars/LoseNine/ruyipage?style=social)](https://github.com/LoseNine/ruyipage/stargazers)
 [![Downloads](https://static.pepy.tech/badge/ruyipage)](https://pepy.tech/project/ruyipage)
 
-## 请我喝咖啡
+## ❤️ 赞助商
 
-如果这个项目对你有帮助，欢迎请我喝杯咖啡，支持我继续完善 `ruyiPage`。
+> [想出现在这里？](mailto:losenine@163.com)
 
 <table>
-  <tr>
-    <td align="center">
-      <b>公众号</b><br>
-      <img src="images/gzh.jpg" width="220" alt="公众号二维码" />
-    </td>
-    <td align="center">
-      <b>QQ 社群</b><br>
-      <img src="images/qq.jpg" width="220" alt="QQ 社群二维码" />
-    </td>
-    <td align="center">
-      <b>联系我 / 个人微信</b><br>
-      <img src="images/weixin.jpg" width="220" alt="个人微信二维码" />
-    </td>
-    <td align="center">
-      <b>请我喝咖啡</b><br>
-      <img src="images/weixingoot.jpg" width="220" alt="收款码" />
-    </td>
-  </tr>
+
+<tr>
+<td width="180"><a href="http://www.fastaitoken.com/register"><img src="images/fastaitoken.svg" alt="FastAIToken" width="150"></a></td>
+<td>🎉 感谢 FastAIToken 对本项目的赞助！<a href="http://www.fastaitoken.com/register">FastAIToken</a> 是面向开发者的 AI API 聚合平台，支持 OpenAI、Claude、Gemini 等主流大模型，充值 1:1，1 元 = 1 美元 API 额度，让开发者以更低成本、更便捷地使用全球领先的大模型服务。<br>
+
+🚀 平台提供多种渠道自由选择：超级低价的 0.02x OpenAI 福利分组（限时）、低至 0.25x OpenAI 分组、0.7x Claude 95% 固定缓存、1.2x Claude Max 渠道；同时提供公开状态页，实时展示各分组的可用率、延迟及运行状态，服务透明可靠，并提供 7×24 小时真人技术支持（非机器人），快速响应开发者需求。<br>
+
+🦊 包含 GPT 5.4 / 5.5 全系列，以及 Claude Opus 4.6 / 4.7 / 4.8 的 Kiro 和 Max 渠道，包纯度，实用耐蹬，如意自用：<a href="http://www.fastaitoken.com/register">http://www.fastaitoken.com/register</a>
+</td>
+</tr>
+
 </table>
-
----
-
-## 配套项目
-
-如果你准备把 `ruyiPage` 用在 AI 自动化分析、复杂网页采集或高风控页面场景，建议先看这些配套项目：
-
-- **AI 自动化分析运行 Skill**
-  面向 AI 协作和自动化分析场景的运行说明与实践入口，适合先了解如何把 `ruyiPage` 接进你的工作流：<https://github.com/LoseNine/ruyipage-skill?tab=readme-ov-file>
-- **Firefox 指纹浏览器项目**
-  用于需要 Firefox 指纹环境、浏览器接管或更高真实度自动化场景，适合和 `ruyiPage` 搭配使用：<https://github.com/LoseNine/firefox-fingerprintBrowser>
-- **Go 语言实现：ruyipage-go**
-  由社区实现的 Go 版本，适合需要在 Go 项目中接入 Firefox 自动化能力的场景。感谢 @pll177 的实现与维护：<https://github.com/pll177/ruyipage-go>
-
----
 
 ## 实战展示
 
@@ -83,13 +64,55 @@
     <td align="center"><b>bet365 实战展示</b><br><img src="images/bet365.png" width="320" alt="bet365 Demo" /></td>
   </tr>
   <tr>
+    <td align="center"><b>reCAPTCHA 评分 0.9 展示</b><br><img src="images/recaptcha.png" width="320" alt="reCAPTCHA score 0.9" /></td>
     <td align="center"><b>指纹浏览器指纹页展示</b><br><img src="images/fingerprint.png" width="320" alt="Fingerprint Browser Demo" /></td>
+  </tr>
+  <tr>
     <td align="center"><b>Firefox 路线真实场景能力</b><br>更适合高风控页面、登录流、验证码与真实交互场景</td>
+    <td></td>
   </tr>
 </table>
 
 > 这些展示图用于说明 `ruyiPage` 在 Firefox 路线下的真实场景能力。
 > 如果目标站点风控更强，仍建议优先配合本项目推荐的 Firefox 内核方案，或任意可用的火狐指纹浏览器使用。
+
+---
+
+## 内核两项底层能力：指纹与追踪
+
+配套内核在 Firefox 源码层面加了两套东西。它们不依赖 BiDi，页面里的 JS 看不见。
+
+### 指纹（fpfile）
+
+一个 `--fpfile=` 文本文件决定浏览器对外呈现的整套指纹：UA、语言、时区、屏幕、CPU 核数、
+触摸、Canvas / 音频扰动、WebGL 显卡参数、字体白名单、WebRTC、语音列表、地理位置，以及
+HTTP / SOCKS5 代理凭据。所有值都在 C++ 原生 getter 里改写，不包装任何 JS 函数，
+所以 `toString()` 仍是 `[native code]`，原型链形状不变。`navigator.webdriver` 恒为 `false`。
+
+多数场景不用手写：`opts.smart_fingerprint()` 会探测出口 IP、匹配语言/时区、从 22 套真机
+硬件特征里抽一套自动生成。要固定某台机型或调整单个字段时，看
+[`fingerprint/fpfile指纹说明.md`](fingerprint/fpfile%E6%8C%87%E7%BA%B9%E8%AF%B4%E6%98%8E.md)
+（[English](fingerprint/fpfile-fingerprint.md)）——每个 key 的取值、别名、影响的 API 和验收方法。
+
+### 追踪（MOZ_DOM_* 环境变量）
+
+启动前设几个环境变量，内核就会把页面运行时发生的事写成日志：每一次 JS 函数调用
+（含参数、返回值、闭包变量、调用树）、DOM 属性读写、Cookie / Storage 操作、异常、
+WASM 模块与跨边界调用、HTTP 报文、WebSocket 帧；还能一次性导出本构建暴露的全部宿主接口，
+用来对照页面探测了什么、什么在这个环境里不存在。另有一组 `MOZ_DOM_API_*` 可以直接
+定制 `Date.now` / `performance.now` / `Math.random` / `crypto.getRandomValues` 的返回值。
+
+```powershell
+$env:MOZ_DOM_TRACE = "1"
+$env:MOZ_DOM_TRACE_FILE = "D:\trace\run.jsonl"
+$env:MOZ_DOM_JSCALL_TRACE = "1"
+& firefox.exe --new-instance -no-remote -profile "D:\profile"
+```
+
+这是分析反爬脚本、补 JS 运行环境时的主要工具。开关速查见
+[`trace/trace-cheatsheet.md`](trace/trace-cheatsheet.md)（63 个开关，含取值、默认值、
+生效条件），输出格式、因果链查法和排障见 [`trace/README.md`](trace/README.md)，
+JSCall 二进制输出的解码器在 [`trace/tools/jscall_decode.py`](trace/tools/jscall_decode.py)。
 
 ---
 
@@ -103,6 +126,14 @@ pip install ruyiPage --upgrade
 
 如果你是首次安装，也可以直接用上面的命令获取最新版。
 
+如果需要**异步（async/await）支持**：
+
+```bash
+pip install ruyiPage[async] --upgrade
+```
+
+这会额外安装 `greenlet` 和 `websockets`，同步 API 完全不受影响。
+
 如果你是从源码运行，或给学员分发项目源码，建议同时安装项目依赖：
 
 ```bash
@@ -115,6 +146,28 @@ pip install -r requirements.txt
 python -c "import ruyipage; print(ruyipage.__version__)"
 ```
 
+### 安装配套 Firefox runtime
+
+`ruyiPage` 提供了类似 Playwright 的浏览器安装方式。安装 Python 包后，建议执行：
+
+```bash
+python -m ruyipage install
+```
+
+这个命令会从 `ruyiPage` 的 GitHub release 下载推荐的 Firefox runtime 并安装到用户缓存目录，默认不校验 hash，便于项目方直接更新 release 资产。后续直接调用 `launch()` 时，会优先使用这个 runtime；如果你显式传入 `browser_path`，仍然以你传入的路径为准。
+
+常用命令：
+
+```bash
+python -m ruyipage install --dry-run     # 只查看下载和安装计划，不下载文件
+python -m ruyipage install --force       # 强制重新下载安装
+python -m ruyipage install --from-file ./firefox.zip
+python -m ruyipage path                  # 输出当前已安装 runtime 的 Firefox 路径
+python -m ruyipage doctor                # 查看当前 runtime 安装状态
+```
+
+如果你本机已经装好了 Firefox，或者你使用的是便携版 / 指纹浏览器，也可以跳过这个步骤，继续通过 `browser_path` 显式指定浏览器路径。
+
 ### 最简单启动
 
 ```python
@@ -125,6 +178,31 @@ page.get("https://www.example.com")
 print(page.title)
 page.quit()
 ```
+
+### 异步（async/await）启动
+
+```python
+import asyncio
+from ruyipage.aio import launch
+
+async def main():
+    page = await launch()
+    await page.get("https://www.example.com")
+    title = await page.get_title()
+    print(title)
+
+    el = await page.ele("#search")
+    await el.click_self()
+    await el.input("hello async")
+
+    await page.quit()
+
+asyncio.run(main())
+```
+
+异步 API 的方法名与同步版完全一致，只需加 `async/await`。
+属性（如 `page.title`）变为异步方法（如 `await page.get_title()`）。
+完整示例见根目录 `quickstart_bing_search_async.py` 和 `quickstart_cloudflare_async.py`。
 
 ### JS 事件 `isTrusted` 对比能力
 
@@ -186,7 +264,6 @@ page = launch(
     user_dir=r"D:\ruyipage_userdir",
     headless=False,
     close_on_exit=True,
-    port=9222,
 )
 
 page.get("https://www.example.com")
@@ -197,6 +274,7 @@ page.quit()
 其中：
 
 - `close_on_exit=True` 表示 Python 程序退出时，自动关闭由 `ruyiPage` 启动的浏览器。
+- 默认启动会在 `10000-32767` 中随机选择可用远程调试端口（避开系统 TCP 动态端口段，以免探测通过后端口被出站连接抢走）。需要给其他进程接管时，用 `page.browser.address` 获取真实地址；确实需要固定地址时再传 `port=12000` 或其他 1w 以上端口。
 - 如果你希望脚本退出后保留浏览器窗口继续手动操作，可以改成 `close_on_exit=False`。
 - 如果你用的是 `attach()` 或 `existing_only(True)` 接管已有浏览器，即使开启 `close_on_exit=True`，退出时也只会断开连接，不会误关外部浏览器。
 
@@ -212,7 +290,6 @@ from ruyipage import FirefoxOptions, FirefoxPage
 opts = FirefoxOptions()
 opts.set_browser_path(r"D:\Firefox\firefox.exe")
 opts.set_user_dir(r"D:\ruyipage_userdir")
-opts.set_port(9222)
 opts.set_proxy("http://127.0.0.1:7890")
 opts.set_window_size(1440, 900)
 opts.headless(False)
@@ -231,8 +308,9 @@ page.quit()
 | --- | --- | --- |
 | `set_browser_path(path)` | 指定 Firefox 可执行文件路径 | Firefox 不在默认目录、使用便携版、机器上装了多个 Firefox |
 | `set_address(address)` | 设置调试地址 `host:port` | 你已经有固定调试地址，想直接连指定实例 |
-| `set_port(port)` | 设置远程调试端口 | 同机多开、避免和别的浏览器端口冲突 |
-| `set_auto_port(True)` | 自动寻找可用端口 | 不想自己手动挑端口，适合脚本批量启动 |
+| `set_port(port)` | 设置固定远程调试端口，并关闭随机端口 | 需要稳定地址用于 attach / 调试，或明确控制端口 |
+| `set_random_port(start=10000, end=65535)` | 随机选择可用远程调试端口 | 新启动的默认策略，用于避开 9222 这类可预测端口 |
+| `set_auto_port(True)` | 按顺序自动寻找可用端口 | 想要可预测的批量启动行为，但不想手动挑每个端口 |
 | `existing_only(True)` | 只接管已有浏览器，不启动新浏览器 | 连接手动启动的 Firefox、ADS、指纹浏览器 |
 | `set_retry(times, interval)` | 设置连接重试次数和间隔 | 启动慢、远程环境抖动、端口就绪较慢 |
 | `set_profile(path)` | 指定 Firefox profile 目录 | 想长期复用登录态、Cookie、扩展、首选项 |
@@ -242,6 +320,7 @@ page.quit()
 | `headless(True/False)` | 设置无头模式 | 服务器运行、后台任务、无需显示界面 |
 | `set_argument(arg, value=None)` | 追加自定义启动参数 | 需要透传 Firefox 原生启动参数 |
 | `remove_argument(arg)` | 移除之前设置过的启动参数 | 复用配置对象时撤销某个参数 |
+| `allow_system_access(True/False)` | 允许或禁止 WebDriver 访问 Firefox 特权上下文 | 仅在父进程、浏览器 UI、扩展或其他特权上下文确实需要自动化时开启 |
 | `set_pref(key, value)` | 写入 Firefox 首选项 | 调整 about:config、代理策略、下载行为等 |
 | `set_window_size(width, height)` | 设置启动窗口大小 | 控制初始分辨率、适配目标站点布局 |
 | `set_proxy(proxy)` | 设置 HTTP / HTTPS / SOCKS 代理 | 需要代理出口、IP 切换、地域访问 |
@@ -259,8 +338,9 @@ page.quit()
 - `close_on_exit(True)` 默认开启，但只会自动关闭 **ruyiPage 自己启动的浏览器**。
 - 如果你是通过 `existing_only(True)` 或 `attach()` 接管外部浏览器，Python 退出时只会断开连接，不会误关用户手动打开的浏览器。
 - 不设置 `user_dir` / `profile` 时，`ruyiPage` 会自动创建临时 profile，更适合一次性脚本。
-- `set_fpfile()` 当前主要是把路径通过 `--fpfile=...` 传给浏览器，并读取其中的代理认证字段；它不是一个自动填充所有浏览器指纹参数的万能入口。
+- `set_fpfile()` 当前主要是把路径通过 `--fpfile=...` 传给浏览器，并读取其中的代理认证字段；如果 `fpfile` 中包含 SOCKS5 的 host/port，且指定了 `user_dir`，ruyipage 会写入对应的 profile 代理 prefs。它不是一个自动填充所有浏览器指纹参数的万能入口。
 - `quick_start()` 适合快速开始，但不是全部配置项的替代品；需要精细控制时，仍建议直接组合 `FirefoxOptions` 的各个方法。
+- Windows 提权会话会自动启用 system access，以兼容 Firefox 155 的远程调试限制；其他环境默认关闭，因为该能力会扩大远程调试权限。可用 `allow_system_access(True/False)` 显式覆盖。它只能在 Firefox 启动时生效；使用 `attach()` 时，外部 Firefox 必须预先带 `--remote-allow-system-access` 启动。
 
 如果你只是想快速启动，优先用 `launch()`；如果你想把浏览器行为写得更明确、更适合对外给用户使用，优先用 `FirefoxOptions`。
 
@@ -279,6 +359,9 @@ page.quit()
 
 # 方式二：直接用 launch()
 page = launch(private=True)
+
+# 带代理快速启动
+page = launch(proxy="http://127.0.0.1:7890")
 page.get("https://www.example.com")
 page.quit()
 ```
@@ -288,7 +371,7 @@ page.quit()
 - `private=True` / `opts.private_mode(True)` 会为 Firefox 增加 `-private` 启动参数
 - 这和默认的临时 `profile` 不是一回事
 - 如果你只是想要一次性会话，不复用历史数据，不传 `user_dir` 也可以
-- 完整示例可参考根目录：`quickstart_private_mode.py`
+- 完整示例可参考 `examples/` 目录
 
 ### 启用 XPath Picker
 
@@ -316,7 +399,7 @@ page.get("https://www.example.com")
 - 点击页面元素时，会锁定当前结果
 - 浮窗会显示元素名字、文本、XPath 绝对路径、XPath 相对路径、元素中心 `(x, y)`
 - 内置 `ruyiPage代码生成` 选项卡，会自动生成对应元素获取代码
-- iframe、嵌套 iframe、open shadow root 场景会自动拼好访问链
+- iframe、嵌套 iframe、open / closed shadow root 场景会自动拼好访问链
 - `XPath (absolute)`、`XPath (relative)`、`ruyiPage代码生成` 都支持一键复制
 - 锁定后不会继续切换到其他元素
 - 点击浮窗里的 `继续选择` 后，才会重新允许选择其他元素
@@ -333,8 +416,22 @@ python examples/42_xpath_picker_complex_showcase.py
 
 - 普通页面元素
 - 同源 iframe / 嵌套 iframe
-- open shadow root
+- open / closed shadow root
 - 复杂文本节点与 SVG 节点
+
+也可以一次性获取当前页面和所有子 frame 内的 open / closed shadow root：
+
+```python
+roots = page.shadow_roots(mode="all")  # all / open / closed
+for root in roots:
+    item = root.ele("#inside")
+```
+
+如果只想扫描当前 browsing context，不递归 iframe：
+
+```python
+roots = page.shadow_roots(mode="all", include_frames=False)
+```
 
 ### 鼠标行为可视化调试
 
@@ -421,15 +518,56 @@ page.actions.human_click(ele, algorithm="windmouse").perform()
 - 拖拽轨迹
 - JS click 的可视化反馈
 
+### 多进程 / 跨脚本连接已有浏览器
+
+如果你的 Firefox 已经由 `ruyiPage` 启动（或其他方式以
+``--remote-debugging-port`` 参数在后台运行），另一个 Python 进程
+可以通过 `attach()` 直接连上去，**不会启动新浏览器**。
+
+**用法**：
+
+```python
+from ruyipage import attach
+
+# 连接到之前由 ruyiPage 启动的 Firefox。
+# 默认随机端口启动时，可从 page.browser.address 获取这个地址。
+page = attach("127.0.0.1:12000")
+
+print(page.title)
+print(page.url)
+```
+
+**典型场景**：
+
+- 主进程启动 Firefox 并保持运行
+- 其他进程 / 脚本通过 `attach()` 连上去，复用同一个浏览器实例
+- 多个进程可以**同时 attach 到同一端口**，各拥有独立的 BiDi 会话
+
+**等价写法（直接使用 `FirefoxOptions`）**：
+
+```python
+from ruyipage import FirefoxOptions, FirefoxPage
+
+opts = FirefoxOptions().set_address(addr).existing_only(True)
+page = FirefoxPage(opts)
+```
+
+**注意**：
+直接传地址字符串 `FirefoxPage('127.0.0.1:12000')` **会尝试启动新浏览器**，
+而不是连接已有的。如果你要连接已有实例，请使用 `attach()` 或
+显式设置 `existing_only(True)`。
+
+---
+
 ### 接管已打开的浏览器
 
 如果 Firefox 已经是你手动打开的，或者是指纹浏览器先打开的，也可以直接接管现有实例。
 
 这套方式适用于任意 **Firefox 内核指纹浏览器**，包括 ADS / FlowerBrowser 这类产品。
-如果浏览器允许固定启动参数，建议加入：
+如果浏览器允许固定启动参数，建议使用 1w 以上端口，避免继续使用 9222：
 
 ```text
---remote-debugging-port=9222
+--remote-debugging-port=12000
 ```
 
 如果后台会把它改写成随机端口，也可以直接使用按进程特征的自动探测接管。
@@ -473,6 +611,22 @@ print(page.url)
 - **支持 user context 隔离**，适合同浏览器多账号、多会话并行
 - **高层 API 可直接上手**，更适合新手和团队统一维护
 
+### BiDi 规范同步
+
+仓库内维护了可复现的 W3C Editor's Draft 快照和源码覆盖报告：
+
+- [规范快照](examples/w3c_bidi/w3c_bidi_apis.json)
+- [覆盖报告](examples/w3c_bidi/W3C_BIDI_COMPARISON.md)
+
+当前核心规范快照中的 67 个命令均有 `_bidi` 底层封装，24 个事件均可通过
+`page.events` 通用入口订阅。Bluetooth、Permissions 等外部扩展规范单独统计；
+浏览器是否实现某个新命令仍取决于 Firefox 版本。
+
+```bash
+python examples/w3c_bidi/extract_w3c_bidi.py --check
+python examples/w3c_bidi/generate_comparison.py --check
+```
+
 ### 高风控场景推荐
 
 如果你的目标站点对自动化非常敏感，优先推荐使用本项目提供的 Firefox 内核方案，或配合任意 Firefox 指纹浏览器使用：
@@ -500,11 +654,12 @@ print(page.url)
 | 弹窗处理 | `page.wait_prompt()` / `page.accept_prompt()` / `page.set_prompt_handler()` | alert / confirm / prompt |
 | 导航事件 | `page.navigation` | navigationStarted、load、historyUpdated 等 |
 | 通用事件 | `page.events` | browsingContext / network / script / input / log 事件 |
-| 网络控制 | `page.network` / `page.intercept` | 请求头、缓存控制、拦截、mock、fail、collector |
-| 浏览上下文 | `page.contexts` | getTree、create tab/window、reload、viewport |
+| 网络控制 | `page.capture` / `page.network` / `page.intercept` | 被动抓包、请求头、缓存控制、拦截、mock、fail、collector |
+| 浏览上下文 | `page.contexts` | getTree、create tab/window、reload、viewport、screencast |
 | 浏览器级能力 | `page.browser_tools` | user context、client window |
 | 脚本能力 | `page.get_realms()` / `page.eval_handle()` / `page.disown_handles()` | realms、远程对象句柄、preload script |
-| Emulation | `page.emulation` | UA、viewport、screen、orientation、JS 开关 |
+| Emulation | `page.emulation` | UA、viewport、screen、orientation、媒体特征、viewport meta、JS 开关 |
+| JS 断点调试 | `page.debugger` | 断点、条件断点、日志断点、事件/XHR 断点、属性监视点、单步、调用栈、作用域、读源码、对象展开、Map/Set 内容、调用 getter、远程调用函数、Promise 状态、异常暂停、黑盒化 |
 | WebExtension | `page.extensions` | 安装目录扩展、安装 xpi、卸载 |
 | 本地存储 | `page.local_storage` / `page.session_storage` | 读写本地存储和会话存储 |
 
@@ -656,11 +811,80 @@ page = FirefoxPage(opts)
 page.get("http://ipinfo.io/json")
 ```
 
+#### SOCKS5 密码代理：user_dir + fpfile
+
+如果 SOCKS5 代理地址和密码保存在 `fpfile` 中，业务代码不需要提前准备 Firefox profile。传入 `user_dir` 和 `fpfile` 后，ruyipage 会在该目录写入 `user.js`，配置 `network.proxy.socks`、`network.proxy.socks_port`、`network.proxy.socks_version=5` 和 `network.proxy.socks_remote_dns=true`。用户名和密码继续留在 `fpfile`，不会写入 `user.js`。
+
+`fpfile` 可以使用你的 Firefox 内核支持的格式，例如：
+
+```text
+socksauth.host:proxy.example.com
+socksauth.port:1000
+socksauth.username:<从安全配置读取，不要写入公开文档或代码>
+socksauth.password:<从安全配置读取，不要写入公开文档或代码>
+```
+
+```python
+from ruyipage import launch
+
+page = launch(
+    browser_path=r"C:\firefox\firefox.exe",
+    user_dir=r"C:\firefox\socks5-profile",
+    fpfile=r"C:\firefox\fp.txt",
+    headless=False,
+)
+page.get("https://ipinfo.io/json")
+```
+
+也可以继续显式传 `proxy="socks5://host:port"`；这种情况下 ruyipage 使用 `proxy` 写入 profile，认证信息仍由支持 `--fpfile` 的 Firefox 内核从 `fpfile` 读取。
+
 适用场景：
 
 - 你在自己的 Firefox 内核里已经实现了 `fpfile` 驱动的 HTTP 代理认证
 - 希望业务层只保留最小代理配置入口
 - 想让代理用户名密码完全留在 `fpfile` 中，而不是写进业务脚本
+
+#### Per-tab SOCKS5 代理池：`set_per_tab_proxies()` + `new_container_tabs()`
+
+如果你的 Firefox 指纹内核已经支持 `proxy.rotate.*`，ruyipage 现在可以直接帮你：
+
+1. 生成运行期 session fpfile；
+2. 写入 `proxy.rotate.enabled=true` / `proxy.rotate.exhausted=...` / 多条 `proxy.rotate.proxy=...`；
+3. 创建真正的 Firefox container tabs；
+4. 让每个 container tab 使用不同的 SOCKS5 密码代理。
+
+最简写法：
+
+```python
+from ruyipage import FirefoxOptions, FirefoxPage
+
+proxies = [
+    "proxy.example.com:1000:user1:pass1",
+    "proxy.example.com:1000:user2:pass2",
+    "proxy.example.com:1000:user3:pass3",
+]
+
+opts = FirefoxOptions()
+opts.set_browser_path(r"C:\firefox\firefox.exe")
+opts.set_per_tab_proxies(proxies, exhausted="wrap")
+
+page = FirefoxPage(opts)
+tabs = page.new_container_tabs(count=len(proxies), url="https://browserscan.net/")
+```
+
+可接受的代理格式：
+
+- `host:port:username:password`
+- `socks5://host:port:username:password`
+
+说明：
+
+- `set_per_tab_proxies()` 会在 profile 目录中自动生成 session fpfile，不会直接修改你原始的 fpfile。
+- 如果你已经先调用了 `set_fpfile()`，ruyipage 会复制原始 fpfile 的内容，再追加 `proxy.rotate.*` 配置。
+- `new_container_tabs()` 通过 Firefox BiDi `browser.createUserContext` + `browsingContext.create(userContext=...)` 创建 container tabs，不要求用户自己安装额外扩展。
+- 这个能力依赖你们的定制 Firefox 内核；普通官方 Firefox 不保证支持 `proxy.rotate.*`。
+
+完整示例见：`examples/52_per_tab_socks5_proxy_browserscan.py`
 
 ---
 
@@ -1206,6 +1430,38 @@ print(body)
 page.intercept.stop()     # 自动清理内部 collector
 ```
 
+### 被动抓包
+
+`page.capture` 用于按 URL 和 method 被动抓取完整请求/响应信息，不会拦截或暂停请求。适合页面打开后自动加载的接口，也支持一次抓多个包：
+
+```python
+page.capture.start("/api/", method="POST")
+
+# 外部正常触发请求：打开页面、点击按钮、执行 JS 都可以
+page.get("https://example.com")
+
+# count=1 返回单个 CapturePacket 或 None
+packet = page.capture.wait(timeout=10)
+
+# count>1 返回 list，超时会返回已经抓到的部分
+packets = page.capture.wait(timeout=10, count=5)
+
+for p in packets:
+    print(p.url, p.method)
+    print(p.request_headers)
+    print(p.request_body)
+    print(p.response_status)
+    print(p.response_headers)
+    print(p.response_body)
+
+# 已抓到的历史包
+all_packets = page.capture.steps
+
+page.capture.stop()
+```
+
+抓自动加载包时要先 `page.capture.start()`，再打开页面；已经发出的历史请求不能补抓。
+
 ### 设置额外请求头
 
 ```python
@@ -1233,7 +1489,6 @@ page.network.set_cache_behavior("bypass")
 
 ```python
 collector = page.network.add_data_collector(
-    ["responseCompleted"],
     data_types=["response"],
 )
 
@@ -1379,6 +1634,7 @@ page.remove_preload_script(preload)
 - `page.input_prompt(text)`
 - `page.set_prompt_handler(...)`
 - `page.clear_prompt_handler()`
+- `page.prompts.set_auto(accept=True)`
 
 ### 典型写法
 
@@ -1398,6 +1654,14 @@ page.run_js("prompt('请输入姓名')", as_expr=False)
 page.clear_prompt_handler()
 ```
 
+#### 兼容 manager 写法
+
+```python
+page.prompts.set_auto(accept=True)
+page.run_js("alert('hello')", as_expr=False)
+page.prompts.clear()
+```
+
 ---
 
 ## 13. Emulation
@@ -1415,6 +1679,35 @@ page.emulation.apply_mobile_preset(
     user_agent="...",
 )
 ```
+
+### H5 触摸能力
+
+```python
+# 运行时覆盖当前标签页的 navigator.maxTouchPoints
+result = page.emulation.set_touch_enabled_result(
+    True,
+    max_touch_points=5,
+    scope="context",
+    strict=True,
+)
+print(result.applied, result.source)
+
+# 发送真实 pointerType=touch 的输入动作
+page.touch.tap((120, 60)).perform()
+
+# 清除当前标签页的覆盖
+page.emulation.set_touch_enabled(False, scope="context")
+```
+
+旧版 Firefox 可在启动前配置 fpfile fallback：
+
+```python
+options = FirefoxOptions().set_touch_fallback(max_touch_points=5)
+page = FirefoxPage(options)
+```
+
+`scope` 支持 `context`、`user_context` 和 `global`。fallback 只在浏览器启动时
+生效，运行时状态和失败原因可通过 `TouchOverrideResult` 查看。
 
 注意：
 
@@ -1450,7 +1743,295 @@ page.extensions.uninstall(ext_id)
 
 ---
 
-## 15. 代表性示例
+## 15. JS 断点调试
+
+高层入口：`page.debugger`
+
+WebDriver BiDi 规范里**没有** debugger 模块，Firefox 也在 141 版彻底移除了 CDP，所以断点级调试在 BiDi 框架里本来是做不到的。`ruyiPage` 额外接了一条 Firefox 自己的 DevTools 远程调试通道（RDP），与 BiDi 连接**并行工作、互不干扰**。
+
+### 启用
+
+调试通道需要 Firefox 以 devtools server 启动，所以要在创建页面前配置：
+
+```python
+from ruyipage import FirefoxOptions, FirefoxPage
+
+opts = FirefoxOptions()
+opts.enable_debugger()          # 写入所需 pref 并加 --start-debugger-server
+page = FirefoxPage(opts)
+
+page.debugger.start()           # 连接并 attach 当前标签页
+```
+
+`enable_debugger(port=6000)` 可以指定端口。`start(auto_resume_after=30)` 可以开启暂停看门狗（见下文注意事项）。
+
+### 读源码
+
+```python
+for s in page.debugger.sources():
+    print(s.url)
+
+code = page.debugger.source_text('app.js')          # 也接受 Source 对象
+lines = page.debugger.breakable_lines('app.js')     # 哪些行可以下断点
+```
+
+`source_text()` 返回的是**JS 引擎正在执行的那份文本**，行号与断点位置、调用栈里的 `line` 完全对齐。这一点自己下载 URL 做不到：
+
+- `eval` / `new Function` / blob 脚本根本没有可下载的地址
+- 内联 `<script>` 的行号是相对整个 HTML 文档的
+
+### 下断点
+
+```python
+bp = page.debugger.set_breakpoint('app.js', 42)
+bp = page.debugger.set_breakpoint('app.js', 42, condition='quantity > 3')  # 条件断点
+
+page.debugger.remove_breakpoint(bp)
+page.debugger.clear_breakpoints()
+```
+
+`column` 省略时会自动查询该行的有效列。Firefox 会**静默忽略**落在无效位置的断点（不报错也不触发），所以不要自己猜列号。
+
+断点按 URL 记录，页面导航后服务端会自动重新应用，不需要重新下。
+
+### 日志断点
+
+给 `log_value` 就变成日志断点：命中时**不暂停**，只把表达式的求值结果记下来。因为暂停期间求不了任意表达式（见「当前限制」），这是观察运行中变量最省事的办法——尤其是循环里每轮的值。
+
+```python
+page.debugger.set_breakpoint('app.js', 42, log_value='quantity, subtotal')
+
+page.run_js('return window.buildCart();')     # 不会阻塞，无需后台线程
+
+for entry in page.debugger.wait_logs(count=3):
+    print(entry['values'], entry['line'])     # [1, 12.5] 42
+```
+
+条件断点和日志断点可以叠加，只在满足条件时记录。`log_stacktrace=True` 会附带调用栈。
+
+> 这类消息是调试器直接注入 DevTools 控制台管道的，**不经过真实的 console API**，所以 `page.console` 看不到，只能从 `debugger.logs()` / `wait_logs()` 读。反过来页面自己的 `console.log` 也不会混进来。
+
+### 暂停与单步
+
+```python
+state = page.debugger.wait_paused(timeout=30)   # -> PausedState
+print(state.why, state.url, state.line)
+
+page.debugger.step_over()
+page.debugger.step_into()
+page.debugger.step_out()
+page.debugger.resume()
+
+page.debugger.pause()                            # 立即暂停
+page.debugger.on_paused(lambda s: print(s))      # 回调方式
+```
+
+### 读调用栈与作用域
+
+```python
+for f in page.debugger.frames():
+    print(f.display_name, f.url, f.line, f.arguments, f.this_object)
+
+scope = page.debugger.scope()                    # 局部变量 + 函数参数 + this
+scope = page.debugger.scope(include_parents=True)  # 继续读闭包与全局
+```
+
+`scope()` 默认沿作用域链读到**函数边界**为止（当前块 + 所属函数），不越过全局。只读最内层块的话，断点停在 `const x = ...` 上时只能看到一个尚未初始化的变量，函数参数会全部缺失。
+
+`this` 不属于环境绑定，它挂在帧上，`scope()` 会以 `'this'` 为键一并给出（`this` 是保留字，不会和局部变量重名）。
+
+全局对象同理不出现在环境链里——`window` 上的东西要这样拿：
+
+```python
+window = page.debugger.global_object()
+page.debugger.get_property(window, 'appConfig')
+```
+
+### 展开对象
+
+作用域里的对象是 `RemoteObject`，已经把协议内嵌的 preview 解码成可读内容（数组变 `list`，普通对象变 `dict`），这一层**零额外请求**：
+
+```python
+items = scope['items']
+print(items.class_name, items.value, items.truncated)
+```
+
+preview 最多带十项，装不下时 `truncated` 为 `True`。要看完整内容：
+
+```python
+page.debugger.expand(obj, depth=3)          # 递归展开
+page.debugger.get_property(obj, 'probe')    # 按名字定向取（大对象用这个）
+page.debugger.constructor_name(obj)         # 取真实类名，例如 'Cart'
+```
+
+> `class_name` 反映的是 JS 的 `[[Class]]`，普通类实例统一是 `'Object'`；真实类名要用 `constructor_name()` 从原型链派生。
+>
+> `window` 有上千个属性，全量 `expand()` 会被 `max_items` 截断（会打警告），这种情况用 `get_property()`。
+
+`get_property()` 按 JS 的正常语义解析：自有属性没有就继续沿原型链找，所以类的方法也取得到（它们挂在原型上）。只要自有属性时传 `own_only=True`。
+
+`RemoteObject` 的相等性只比较类名和内容，**不比较 actor id**。对象 actor 每次 resume 都会重建，否则「单步后哪些变量变了」这类对比会把所有对象都误报成变化。
+
+### 读取普通属性以外的内容
+
+`expand()` 只能看到普通属性，下面这些各有各的取法：
+
+```python
+# Map / Set 的条目不是属性，preview 也只带前十项
+page.debugger.entries(obj)          # Map -> {键: 值}；Set -> [值, ...]
+
+# 访问器属性默认只显示 '<accessor>'，读它意味着执行页面代码
+page.debugger.invoke_getter(obj, 'total')
+
+# 超长字符串随包只回开头一段，当普通 str 用得到的是截断版
+page.debugger.read_string(scope['html'])
+
+# Promise 的状态与结果
+page.debugger.promise_state(obj)    # {'state': 'fulfilled', 'value': 99, ...}
+```
+
+### 远程调用函数
+
+暂停期间求不了任意表达式，但可以**调用页面里已有的函数**——包括业务函数本身：
+
+```python
+fn = page.debugger.get_property(scope['app'], 'formatPrice')
+print(page.debugger.call(fn, args=[12.5]))            # '¥12.50'
+
+# 参数和 this 都可以传远端对象
+page.debugger.call(fn, args=[scope['item']], this=scope['app'])
+```
+
+函数内部抛异常会转成 `DebuggerError`，异常内容在消息里。
+
+### 属性监视点
+
+排查「这个值到底是被谁改掉的」——CDP 没有对应能力：
+
+```python
+page.debugger.watch_property(obj, 'token', on='set')   # 也可 'get' / 'getorset'
+
+state = page.debugger.wait_paused(timeout=30)
+print(page.debugger.frames())        # 谁在写它，一目了然
+
+page.debugger.unwatch_property(obj)  # 省略属性名则清除该对象上的全部监视点
+```
+
+> 目标属性必须**已经存在**、可配置、且是数据属性（不是 getter/setter）。不满足时服务端会静默忽略——这个请求没有回执，无法从客户端判断。
+
+### 异常时自动暂停
+
+不用先猜出错位置再下断点，直接让页面跑到抛异常的现场停下：
+
+```python
+page.debugger.pause_on_exceptions(True, ignore_caught=True)
+
+state = page.debugger.wait_paused(timeout=30)
+if state.is_exception:
+    print(state.exception)      # 已解码的 TypeError 等，含 message 与 stack
+```
+
+`ignore_caught=True`（默认）会忽略被 `catch` 接住的异常，否则页面正常的 try/catch 流程会不停触发暂停。
+
+另有 `pause_on_debugger_statement()` 控制是否在 JS 的 `debugger` 语句处暂停。
+
+### 事件断点与 XHR 断点
+
+不需要预先知道处理器写在哪个文件哪一行，直接按行为下断点：
+
+```python
+# 看看内核支持哪些事件（分组名 -> 事件 id 列表）
+print(page.debugger.available_event_breakpoints())
+
+# 任何 click 处理器执行时暂停
+page.debugger.set_event_breakpoints(['event.mouse.click'])
+
+state = page.debugger.wait_paused(timeout=30)
+if state.is_event_breakpoint:
+    print(state.event_breakpoint)      # 'event.mouse.click'
+    print(page.debugger.frames())      # 处理器在哪，一目了然
+
+page.debugger.set_event_breakpoints([])   # 传空列表清除
+```
+
+```python
+# 请求 URL 含 /api/ 时暂停
+page.debugger.set_xhr_breakpoint('/api/', method='GET')
+
+state = page.debugger.wait_paused(timeout=30)
+if state.is_xhr:
+    print(page.debugger.frames())      # 是谁发起的这个请求
+
+page.debugger.remove_xhr_breakpoint('/api/', method='GET')
+```
+
+`path` 传空串、`method` 传 `'ANY'` 即匹配所有请求。这两类断点对「点了没反应」「这个请求哪来的」这种排查特别有效。
+
+### 黑盒化框架代码
+
+真实页面里不做黑盒化，`step_into` 会一头扎进 React / jQuery 内部，很难走回自己的代码：
+
+```python
+page.debugger.blackbox('https://cdn.example.com/react.min.js')
+page.debugger.blackbox('vendor.js', start_line=1, end_line=5000)   # 也可只黑盒某个行区间
+
+print(page.debugger.blackboxed())      # 当前被标记的源
+page.debugger.unblackbox('vendor.js')
+```
+
+同一个 HTML 里的多段内联脚本共用 URL，会被一并标记。
+
+### 其他执行控制
+
+```python
+page.debugger.skip_breakpoints(True)    # 临时忽略全部断点，不必逐个删除
+page.debugger.restart_frame()           # 回到当前帧入口重新执行（副作用不会撤销）
+page.debugger.include_async_frames()    # 调用栈包含异步父帧
+```
+
+`include_async_frames()` 对现代页面很有必要——大量 async/await 之下同步栈往往只剩一层，看不出是谁发起的。打开后帧上的 `asyncCause` 会说明它是被什么衔接过来的。
+
+### ⚠️ 必读注意事项
+
+**JS 暂停期间，所有依赖 JS 线程的 BiDi 调用都会阻塞到超时**（`run_js`、点击、取元素文本等）。所以触发断点的调用必须放在后台线程：
+
+```python
+import threading
+
+page.debugger.set_breakpoint('app.js', 42)
+
+threading.Thread(
+    target=lambda: page.run_js('return window.doWork();', timeout=60),
+    daemon=True,
+).start()
+
+state = page.debugger.wait_paused(timeout=30)
+# ... 检查现场，只用 page.debugger 的接口 ...
+page.debugger.resume()
+```
+
+无人值守的脚本建议开看门狗兜底，避免漏调 `resume()` 让页面永久卡死：
+
+```python
+page.debugger.start(auto_resume_after=30)
+```
+
+`stop()` 在断开前会自动恢复执行，不会把页面留在暂停状态。
+
+### 当前限制
+
+- **暂停时无法求任意表达式**。这是协议限制而非未实现：Firefox 的 `evaluateJSAsync` 在暂停期间不投递结果，`frame` actor 也没有 eval 方法。替代做法有三条：`scope()` + `expand()` + `get_property()` 读状态、`call()` 调用页面已有的函数、以及用**日志断点**在不暂停的前提下记录任意表达式。
+- **无法修改变量值**。`environment` actor 的 spec 里 `methods` 是空的，只能读不能写。
+- **无法热替换脚本源码**。Firefox 从未实现 CDP 的 `setScriptSource` 那类 live edit。
+- **只覆盖顶层标签页**，iframe 和 Worker 里的 JS 调试不到。
+- **不做 source map 解析**，服务端只提供 `sourceMapURL` 元数据，压缩代码的行号需要自行映射。
+- RDP 是 Firefox 私有协议，没有跨大版本兼容承诺。
+
+参考示例：`examples/55_js_debugger.py`、`examples/56_ai_autonomous_debug.py`（后者演示只给页面地址、由程序自己发现代码并定位断点的完整闭环）。
+
+---
+
+## 16. 代表性示例
 
 仓库里已经包含大量示例，建议按编号学习。
 
@@ -1499,7 +2080,107 @@ page.extensions.uninstall(ext_id)
 - `36_native_bidi_select.py`
 - `39_attach_exist_browser.py` 自动探测可接管实例，再接管已打开的 Firefox/指纹浏览器
 - `42_xpath_picker_complex_showcase.py` 启动 XPath picker，并打开包含复杂节点、shadow root、嵌套 iframe 的综合展示页
+- `42_3_debug_px_context_probe.py` 直接打开 `debug_px.html`，打印 PX challenge iframe 的 browsing context 树，并尝试 attach 到 child context 做最小 DOM / canvas 诊断
 - `46_human_behavior_showcase.py` 演示 bezier / windmouse 两套拟人轨迹算法，并开启鼠标行为可视化
+- `48_smart_fingerprint.py` 演示 `apply_smart_fingerprint()` 一站式智能指纹（geo 探测 + 内核 fpfile + BiDi 仿真）
+- `52_per_tab_socks5_proxy_browserscan.py` 单浏览器创建多个 container tabs，并让每个 tab 走不同 SOCKS5 密码代理
+- `53_duckai_eventstream_capture.py` 使用 Firefox 打开 Duck.ai，提交聊天内容，并拦截 `POST /duckchat/v1/chat` 的 EventStream 响应体
+- `54_bing_passive_capture.py` 使用 `page.capture` 先启动被动抓包，再打开 Bing 搜索页，抓自动加载请求的请求头/请求体/响应头/响应体
+- `55_js_debugger.py` `page.debugger` 常用 API：源码、断点、条件/日志断点、单步、栈与作用域、对象检查、异常/事件/XHR 断点、监视点、黑盒
+- `56_ai_autonomous_debug.py` 自主调试闭环：只给页面地址，自己发现源码、断点、异常现场和点击处理器
+
+---
+
+## 智能指纹一站式 API
+
+`ruyiPage` 在 [`firefox-fingerprintBrowser`](https://github.com/LoseNine/firefox-fingerprintBrowser)
+内核之上提供了开箱即用的 **智能指纹** 能力：一行代码完成「探测出口 IP →
+匹配语言/时区/语音 → 抽取 22 套真机硬件特征 → 写出 `fpfile.txt`」全流程。
+`apply_smart_fingerprint()` 默认不设置外部窗口；推荐顺序是先取得 `ctx`，再创建
+`FirefoxPage(opts)`，最后调用 `ctx.apply_emulation(page)`。
+
+### 推荐顺序
+
+```python
+from ruyipage import FirefoxOptions, FirefoxPage, CountryMismatchError
+
+opts = FirefoxOptions()
+opts.set_browser_path(r"C:/Program Files/Mozilla Firefox/firefox.exe")
+
+ctx = opts.smart_fingerprint(
+    proxy_host="proxy.example.com", proxy_port=8080,
+    proxy_user="u", proxy_pwd="p",
+    require_country="US",      # 出口 IP 国家不一致 → CountryMismatchError
+    logger=print,
+)
+
+page = FirefoxPage(opts)
+ctx.apply_emulation(page)       # 顺序必须是 ctx -> page -> ctx.apply_emulation(page)
+page.get("https://browserleaks.com/webgl")
+```
+
+### 流水线说明
+
+1. `build_proxies_dict(...)` — 组装 `requests` 风格的 proxies。
+2. `fetch_geo_info(...)` — 10 数据源回退；`require_country` 不匹配立即抛
+   `CountryMismatchError`。
+3. `fetch_public_ipv6(...)` — best-effort，仅富化出口诊断信息；不会自动把代理
+   Geo IP 写成 WebRTC ICE 地址。
+4. 自动生成 / 复用 `userdir`，写入符合内核字段顺序的 `fpfile.txt`；不再写入
+   `width` / `height`。
+5. 默认向 Options 加入 `about:blank` 启动页，使页面创建后可立即应用 BiDi
+   覆盖且不需要 `remote-allow-system-access`；已有自定义启动页时传
+   `set_startup_page_on_opts=False`。`set_window_size_on_opts` 仅为兼容保留且已忽略；智能指纹不会把
+   `screen.width/height` 映射为 Firefox 外窗尺寸。确需设置外窗时，请在创建
+   `FirefoxPage` 前由调用方显式调用 `opts.set_window_size(width, height)`。
+6. 返回 `FingerprintContext`：
+   - `ctx.summary()` — 单行日志；
+   - `ctx.apply_emulation(page)` — 默认通过
+     `page.emulation.set_screen_size(hw.width, hw.height)` 设置
+     `screen.width` / `screen.height` / `screen.avail*`；`outerWidth` /
+     `innerWidth` / viewport 继续由 Firefox 原生维护并随窗口变化。返回结果包含
+     `screen`、`geolocation`、`locale`、`timezone`、`headers`；
+   - 异步页面使用 `await ctx.apply_emulation_async(async_page)`；该入口始终可等待；
+   - `ctx.to_dict()` — 持久化指纹身份（账号库等）。
+
+### 内置数据资产
+
+- 22 套 Windows 真机硬件特征（NVIDIA RTX 系 + AMD RX 系 + Intel UHD/Arc）。
+- 30+ 国语言 / Accept-Language / 微软语音映射，含 `_default` 兜底。
+- UA 优先使用 `opts.browser_path` 对应 Firefox 的实际主版本；可执行文件无法查询时
+  才回退到内置基准版本，且不再随机抖动主版本。
+- WebRTC 默认保持 Firefox 原生 ICE，仅在调用方提供真实 ICE 地址时写入显式覆盖。
+  原生 srflx 地址可能不同于 HTTP 代理出口；`local_webrtc_*` 也不会筛除所有其他
+  host candidate。
+
+### 异常体系
+
+```
+FingerprintError
+├── FingerprintConfigError      # 内置 JSON 损坏（部署期错误）
+└── GeoError                    # 10 个 geo 数据源全部失败
+    └── CountryMismatchError    # 出口 IP 国家与 require_country 不一致
+        # 属性：actual / required
+```
+
+完整字段定义、低层接口（`pick_fingerprint` / `write_fpfile` /
+`list_hardware_profiles` / `get_country_profile`）见
+[`ruyipage/_fingerprint/README.md`](ruyipage/_fingerprint/README.md)
+与示例 `examples/48_smart_fingerprint.py`。
+
+### fpfile 指纹字段完整说明
+
+上面的智能指纹 API 会自动写出 `fpfile`，多数场景无需手动干预。当你需要**固定某台
+真机机型**、**手动调整智能指纹未覆盖的字段**（WebGPU、语音列表、地理位置细项等），
+或**只用内核不经过 ruyiPage** 时，`fpfile` 的每一个字段——取值范围、别名、默认值、
+影响的 JS/HTTP API、以及对应检测点的验收方法——都记录在：
+
+**[`fingerprint/fpfile指纹说明.md`](fingerprint/fpfile%E6%8C%87%E7%BA%B9%E8%AF%B4%E6%98%8E.md)**
+（English: [`fpfile-fingerprint.md`](fingerprint/fpfile-fingerprint.md)）
+
+覆盖自动化检测、硬件/设备、Canvas、WebGL、音频、字体、Navigator 一致性、
+WebRTC/媒体、时区/语言、反 Hook 十类检测点，外加网络代理与认证、WebGPU、
+必填清单和一键自检脚本。
 
 ---
 
@@ -1584,3 +2265,49 @@ page.extensions.uninstall(ext_id)
 - 高风控场景适配
 
 但这些能力仅限于**合法、合规、正当**的技术研究和自动化应用场景。
+
+---
+
+## 配套项目
+
+如果你准备把 `ruyiPage` 用在 AI 自动化分析、复杂网页采集或高风控页面场景，建议先看这些配套项目：
+
+- 📘 **官方文档 / 自动化文档**
+  更系统地查看 `ruyiPage` 相关自动化说明、接入方式和配套能力说明：<https://0xshoulderlab.site/automation>
+- 🦊 **Firefox 指纹浏览器项目**
+  用于需要 Firefox 指纹环境、浏览器接管或更高真实度自动化场景，适合和 `ruyiPage` 搭配使用：<https://github.com/LoseNine/firefox-fingerprintBrowser>
+- 🔌 **MCP Server：ruyi-mcp**
+  基于 TypeScript MCP SDK 和常驻 Python Bridge 的社区维护集成，将 `ruyiPage` 的浏览器自动化、网络采集、指纹分析、拟人交互和 WebDriver BiDi JSON Trace 能力提供给 Claude Code、Codex、Cursor 等 MCP 客户端。感谢 @Facetomyself 的实现与维护：<https://github.com/Facetomyself/ruyi-mcp>
+- 🟨 **JavaScript 实现：ruyipage-js**
+  面向 JavaScript / Node.js 生态的配套实现，适合希望在 JS 项目里接入 `ruyiPage` 思路与能力的场景：<https://github.com/GanFish404/ruyipage-js>
+- 🐹 **Go 语言实现：ruyipage-go**
+  由社区实现的 Go 版本，适合需要在 Go 项目中接入 Firefox 自动化能力的场景。感谢 @pll177 的实现与维护：<https://github.com/pll177/ruyipage-go>
+- 🖥️ **桌面端 GUI 管理工具：ruyiBrowser-GUI**
+  基于 Electron + Vue3 的 Firefox 指纹浏览器图形化管理工具，无需命令行即可创建、管理和启动多个独立指纹环境。感谢 @jacklaigougou 的实现与维护：<https://github.com/jacklaigougou/ruyiBrowser-GUI>
+
+---
+
+## 请我喝咖啡
+
+如果这个项目对你有帮助，欢迎请我喝杯咖啡，支持我继续完善 `ruyiPage`。
+
+<table>
+  <tr>
+    <td align="center">
+      <b>公众号</b><br>
+      <img src="images/gzh.jpg" width="220" alt="公众号二维码" />
+    </td>
+    <td align="center">
+      <b>QQ 社群</b><br>
+      <img src="images/qq.jpg" width="220" alt="QQ 社群二维码" />
+    </td>
+    <td align="center">
+      <b>联系我 / 个人微信</b><br>
+      <img src="images/weixin.jpg" width="220" alt="个人微信二维码" />
+    </td>
+    <td align="center">
+      <b>请我喝咖啡</b><br>
+      <img src="images/weixingoot.jpg" width="220" alt="收款码" />
+    </td>
+  </tr>
+</table>
